@@ -629,11 +629,11 @@ export function decodeDeviceInfo(input) {
   const functionalMode = view.getUint16(offset, true);
   offset += 2;
 
-  const operations = readCountedArray(bytes, view, offset, 4);
+  const operations = readCountedArray(bytes, view, offset, 2);
   offset = operations.offset;
-  const events = readCountedArray(bytes, view, offset, 4);
+  const events = readCountedArray(bytes, view, offset, 2);
   offset = events.offset;
-  const properties = readCountedArray(bytes, view, offset, 4);
+  const properties = readCountedArray(bytes, view, offset, 2);
   offset = properties.offset;
   const captureFormats = readCountedArray(bytes, view, offset, 2);
   offset = captureFormats.offset;
