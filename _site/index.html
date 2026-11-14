@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Try mtp-web: read, upload and delete files on an MTP phone over WebUSB."
+    />
+    <title>mtp-web demo</title>
+    <link rel="icon" href="img/logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="hero">
+        <div class="hero-copy">
+          <div class="brand">
+            <img
+              class="brand-logo"
+              src="img/logo.svg"
+              alt=""
+              width="44"
+              height="44"
+            />
+            <p class="eyebrow">mtp-web</p>
+          </div>
+          <h1>Browser demo</h1>
+          <p class="lede">
+            Connect a phone in File Transfer mode, then browse, download, upload
+            and delete objects over WebUSB.
+          </p>
+        </div>
+        <div class="hero-meta">
+          <p class="hint">
+            Works in Chromium browsers over HTTPS. Select the phone in the
+            browser picker.
+          </p>
+          <p class="hero-links">
+            <a href="https://github.com/nisrulz/mtp-web">mtp-web on GitHub</a>
+            <span aria-hidden="true">·</span>
+            <a
+              href="https://github.com/nisrulz/mtp-web/blob/master/docs/usage.md"
+            >
+              Usage guide
+            </a>
+          </p>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <section
+          class="card connection-pane"
+          aria-labelledby="connection-heading"
+        >
+          <div class="card-header">
+            <h2 id="connection-heading">Connection</h2>
+            <span id="status" class="status" role="status" aria-live="polite">
+              Not connected
+            </span>
+          </div>
+
+          <div class="toolbar">
+            <button id="connect" class="button primary" type="button">
+              Connect
+            </button>
+            <p class="hint">
+              The browser opens a device picker. Select the phone and allow
+              access.
+            </p>
+          </div>
+
+          <div class="toolbar">
+            <p class="hint">
+              Unlock the phone and set the USB mode to
+              <strong>File Transfer / MTP</strong>. Close Android File Transfer
+              and <code>adb</code> first. The page does not send data to a
+              server.
+            </p>
+          </div>
+
+          <div class="toolbar">
+            <label id="storage-label" for="storage-button">Storage</label>
+            <div class="storage-picker">
+              <button
+                id="storage-button"
+                class="select-button"
+                type="button"
+                aria-haspopup="listbox"
+                aria-expanded="false"
+                aria-controls="storage-menu"
+                aria-labelledby="storage-label storage-value"
+                disabled
+              >
+                <span id="storage-value">No storage</span>
+                <svg
+                  class="select-chevron"
+                  viewBox="0 0 20 20"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="m5 8 5 5 5-5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
+              <ul
+                id="storage-menu"
+                class="select-menu"
+                role="listbox"
+                aria-labelledby="storage-label"
+                hidden
+              ></ul>
+            </div>
+            <button id="refresh" class="button" type="button" disabled>
+              Refresh
+            </button>
+            <p id="storage-note" class="hint" role="status"></p>
+          </div>
+
+          <div class="toolbar">
+            <input type="file" id="file" disabled />
+            <button id="upload" class="button primary" type="button" disabled>
+              Upload to storage root
+            </button>
+          </div>
+        </section>
+
+        <section class="card objects-pane" aria-labelledby="objects-heading">
+          <div class="card-header">
+            <h2 id="objects-heading">Objects</h2>
+            <p class="hint">Newest first</p>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Name</th>
+                  <th scope="col">Size</th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="objects">
+                <tr>
+                  <td colspan="3" class="empty">Connect to load objects.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <script src="demo.js"></script>
+  </body>
+</html>
