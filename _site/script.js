@@ -11,6 +11,10 @@ const refreshButton = document.querySelector('#refresh');
 const fileInput = document.querySelector('#file');
 const uploadButton = document.querySelector('#upload');
 const table = document.querySelector('#objects');
+const filesTable = document.querySelector('#files-table');
+const emptyState = document.querySelector('#empty-state');
+const emptyTitle = document.querySelector('#empty-title');
+const emptyDetail = document.querySelector('#empty-detail');
 const folderBackButton = document.querySelector('#folder-back');
 const folderPath = document.querySelector('#folder-path');
 const fileCount = document.querySelector('#file-count');
@@ -249,27 +253,15 @@ function itemCount(count) {
   return `${count} item${count === 1 ? '' : 's'}`;
 }
 
-function resetTable(
+function showEmptyState(
   title = 'No phone connected',
   detail = 'Connect your phone to browse its files.',
 ) {
   table.replaceChildren();
-  const row = document.createElement('tr');
-  const cell = document.createElement('td');
-  cell.colSpan = 3;
-  cell.className = 'empty';
-
-  const heading = document.createElement('p');
-  heading.className = 'empty-title';
-  heading.textContent = title;
-
-  const hint = document.createElement('p');
-  hint.className = 'empty-detail';
-  hint.textContent = detail;
-
-  cell.append(heading, hint);
-  row.append(cell);
-  table.append(row);
+  filesTable.hidden = true;
+  emptyState.hidden = false;
+  emptyTitle.textContent = title;
+  emptyDetail.textContent = detail;
 }
 
 function updateConnectionState() {
@@ -298,7 +290,7 @@ async function disconnect({ silent = false } = {}) {
   uploadButton.disabled = true;
   storageNote.textContent = '';
   storageValue.textContent = 'No storage found';
-  resetTable();
+  showEmptyState();
   setFileCount('No items', 'neutral');
   updateUploadState();
   connectButton.disabled = !usbSupported;
@@ -581,7 +573,7 @@ function addRow(object) {
 
 async function loadObjects() {
   if (selectedStorageId == null) {
-    resetTable(
+    showEmptyState(
       mtp ? 'No storage is available' : 'No phone connected',
       mtp
         ? 'Unlock your phone and allow file access.'
@@ -591,7 +583,7 @@ async function loadObjects() {
     return;
   }
 
-  resetTable('Loading files…', 'This can take a moment on a large folder.');
+  showEmptyState('Loading files…', 'This can take a moment on a large folder.');
   setFileCount('Loading…', 'warning');
 
   try {
@@ -603,7 +595,7 @@ async function loadObjects() {
     handles.sort((a, b) => b - a);
 
     if (handles.length === 0) {
-      resetTable(
+      showEmptyState(
         'This folder is empty',
         'Upload a file to add it to this folder.',
       );
@@ -615,9 +607,14 @@ async function loadObjects() {
     for (const handle of handles) {
       addRow(await mtp.getObjectInfo(handle));
     }
+    emptyState.hidden = true;
+    filesTable.hidden = false;
     setFileCount(itemCount(handles.length), 'success');
   } catch (error) {
-    resetTable('Could not load files', 'Try again or reconnect your phone.');
+    showEmptyState(
+      'Could not load files',
+      'Try again or reconnect your phone.',
+    );
     setFileCount('No items', 'neutral');
     throw error;
   }
@@ -858,7 +855,7 @@ updateFolderHeader();
 updateThemeToggle();
 updateConnectionState();
 updateUploadState();
-resetTable();
+showEmptyState();
 appendLog('info', 'Demo ready');
 
 if (!usbSupported) {
