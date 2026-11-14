@@ -2205,7 +2205,9 @@ class Mtp extends EventTarget {
   /**
    * Read until the data phase of the current operation arrives. Event blocks
    * are ignored; an error response is turned into an exception instead of
-   * being silently skipped (which used to leave the stream out of sync).
+   * being silently skipped (which used to leave the stream out of sync). A
+   * device may answer OK without a data phase when the dataset is empty, so an
+   * OK response is returned to the caller as the whole result.
    */
   async readData(deadline = Date.now() + this.transferDeadlineMs, operation) {
     let eventBlocks = 0;
@@ -2224,12 +2226,7 @@ class Mtp extends EventTarget {
         if (container.codeValue !== CODE.OK.value) {
           throw new MtpResponseError(container, operation);
         }
-        this.transportHealthy = false;
-        throw new Error(
-          `Received a response before the expected data block${operationLabel(
-            operation,
-          )}.`,
-        );
+        return container;
       }
 
       this.transportHealthy = false;
@@ -2349,23 +2346,26 @@ class Mtp extends EventTarget {
     // Start the response deadline after the request and its data have gone out.
     // A large property list must not consume the time reserved for the reply.
     const deadline = Date.now() + this.transferDeadlineMs;
-    let data = null;
+    let received = null;
     if (expectData) {
-      data = await this.readData(deadline, container.code);
-      if (data.transactionID !== transactionID) {
+      received = await this.readData(deadline, container.code);
+      if (received.transactionID !== transactionID) {
         this.transportHealthy = false;
         throw new Error(
-          `Unexpected data-block transaction ID ${data.transactionID} ` +
-            `(expected ${transactionID}).`,
+          received.typeValue === DATA_BLOCK
+            ? `Unexpected data-block transaction ID ${received.transactionID} ` +
+                `(expected ${transactionID}).`
+            : `Unexpected transaction ID ${received.transactionID} ` +
+                `(expected ${transactionID}).`,
         );
       }
     }
 
-    const response = await this._readResponse(
-      transactionID,
-      deadline,
-      container.code,
-    );
+    const response =
+      received?.typeValue === RESPONSE_BLOCK
+        ? received
+        : await this._readResponse(transactionID, deadline, container.code);
+    const data = received?.typeValue === DATA_BLOCK ? received : null;
     this._log('debug', 'response', {
       code: response.code,
       codeValue: response.codeValue,
@@ -2395,14 +2395,14 @@ class Mtp extends EventTarget {
     const { data } = await this._execute(this._command(code, payload), {
       expectData: true,
     });
-    return data.payload;
+    return data ? data.payload : new ArrayBuffer(0);
   }
 
   async _executeForDataDirect(code, payload = []) {
     const { data } = await this._executeDirect(this._command(code, payload), {
       expectData: true,
     });
-    return data.payload;
+    return data ? data.payload : new ArrayBuffer(0);
   }
 
   async _executeForResponse(code, payload = [], options = {}) {

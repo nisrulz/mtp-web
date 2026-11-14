@@ -1908,16 +1908,16 @@ test('read rejects a header with a length below 12', async () => {
   await assert.rejects(() => mtp.read(), /Invalid MTP container length/);
 });
 
-test('readData rejects a response before the data phase', async () => {
+test('readData returns an OK response that replaces an empty data phase', async () => {
   const stream = concatBytes([response(OK, 0), response(OK, 1)]);
   const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
   await mtp.ready;
   await mtp.openSession();
 
-  await assert.rejects(
-    () => mtp.readData(),
-    /response before the expected data block/,
-  );
+  const container = await mtp.readData();
+  assert.equal(container.typeValue, RESPONSE_BLOCK);
+  assert.equal(container.codeValue, OK);
+  assert.equal(container.transactionID, 1);
 });
 
 test('a wrong response transaction ID poisons the transport', async () => {
@@ -3000,6 +3000,17 @@ test('getThumb returns bytes and accepts an empty payload', async () => {
   assert.deepEqual(await mtp.getThumb(7), new Uint8Array(0));
   assert.deepEqual(commandParameters(device, 1), [7]);
   assert.deepEqual(commandParameters(device, 2), [7]);
+});
+
+test('getThumb returns an empty array when the device sends no data phase', async () => {
+  const stream = concatBytes([response(OK, 0), response(OK, 1)]);
+  const device = new FakeDevice(stream);
+  const mtp = new Mtp(0x1234, 0x5678, device);
+  await mtp.ready;
+  await mtp.openSession();
+
+  assert.deepEqual(await mtp.getThumb(7), new Uint8Array(0));
+  assert.deepEqual(commandParameters(device, 1), [7]);
 });
 
 test('streaming upload writes chunks in order and reports progress', async () => {
