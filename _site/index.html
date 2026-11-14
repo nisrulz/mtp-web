@@ -5,9 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Try mtp-web: read, upload and delete files on an MTP phone over WebUSB."
+      content="Browse, download, upload and delete files on your Android phone from the browser."
     />
-    <title>mtp-web demo</title>
+    <title>mtp-web · Phone file browser</title>
+    <script>
+      (() => {
+        let stored = null;
+        try {
+          stored = localStorage.getItem('mtp-web-theme');
+        } catch {
+          // Storage can be unavailable for local files.
+        }
+        const theme =
+          stored === 'light' || stored === 'dark'
+            ? stored
+            : matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark'
+              : 'light';
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
     <link rel="icon" href="img/logo.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="style.css" />
   </head>
@@ -25,16 +42,23 @@
             />
             <p class="eyebrow">mtp-web</p>
           </div>
-          <h1>Browser demo</h1>
+          <h1>Browse your phone</h1>
           <p class="lede">
-            Connect a phone in File Transfer mode, then browse, download, upload
-            and delete objects over WebUSB.
+            Connect your Android phone to browse, download, upload and delete
+            files from this page.
           </p>
         </div>
         <div class="hero-meta">
+          <button
+            id="theme-toggle"
+            class="button icon-button theme-toggle"
+            type="button"
+            aria-label="Switch to dark theme"
+            title="Switch to dark theme"
+          ></button>
           <p class="hint">
-            Works in Chromium browsers over HTTPS. Select the phone in the
-            browser picker.
+            Open this page in Chrome or Edge, then select your phone in the
+            browser prompt.
           </p>
           <p class="hero-links">
             <a href="https://github.com/nisrulz/mtp-web">mtp-web on GitHub</a>
@@ -54,28 +78,34 @@
           aria-labelledby="connection-heading"
         >
           <div class="card-header">
-            <h2 id="connection-heading">Connection</h2>
+            <h2 id="connection-heading">Connect your phone</h2>
             <span id="status" class="status" role="status" aria-live="polite">
-              Not connected
+              Phone not connected
             </span>
           </div>
 
           <div class="toolbar">
             <button id="connect" class="button primary" type="button">
-              Connect
+              Connect phone
             </button>
+            <button
+              id="disconnect"
+              class="button icon-button"
+              type="button"
+              aria-label="Disconnect phone"
+              title="Disconnect phone"
+              disabled
+            ></button>
             <p class="hint">
-              The browser opens a device picker. Select the phone and allow
-              access.
+              Select your phone in the browser prompt and allow access.
             </p>
           </div>
 
           <div class="toolbar">
             <p class="hint">
-              Unlock the phone and set the USB mode to
-              <strong>File Transfer / MTP</strong>. Close Android File Transfer
-              and <code>adb</code> first. The page does not send data to a
-              server.
+              Unlock your phone, choose <strong>File Transfer / MTP</strong>,
+              and close other apps that use your phone. Your files stay on your
+              device; this page does not send them to a server.
             </p>
           </div>
 
@@ -92,7 +122,7 @@
                 aria-labelledby="storage-label storage-value"
                 disabled
               >
-                <span id="storage-value">No storage</span>
+                <span id="storage-value">No storage found</span>
                 <svg
                   class="select-chevron"
                   viewBox="0 0 20 20"
@@ -116,24 +146,52 @@
                 hidden
               ></ul>
             </div>
-            <button id="refresh" class="button" type="button" disabled>
-              Refresh
-            </button>
+            <button
+              id="refresh"
+              class="button icon-button"
+              type="button"
+              aria-label="Refresh files"
+              title="Refresh files"
+              disabled
+            ></button>
             <p id="storage-note" class="hint" role="status"></p>
           </div>
 
           <div class="toolbar">
-            <input type="file" id="file" disabled />
+            <input type="file" id="file" hidden />
             <button id="upload" class="button primary" type="button" disabled>
-              Upload to storage root
+              Upload file
             </button>
           </div>
         </section>
 
         <section class="card objects-pane" aria-labelledby="objects-heading">
           <div class="card-header">
-            <h2 id="objects-heading">Objects</h2>
-            <p class="hint">Newest first</p>
+            <div class="folder-heading">
+              <button
+                id="folder-back"
+                class="button small icon-button"
+                type="button"
+                aria-label="Go back one folder"
+                title="Go back one folder"
+                disabled
+              ></button>
+              <div>
+                <h2 id="objects-heading">Files</h2>
+                <p id="folder-path" class="hint">Storage root</p>
+              </div>
+            </div>
+            <div class="files-meta">
+              <span
+                id="file-count"
+                class="status"
+                role="status"
+                aria-live="polite"
+              >
+                No items
+              </span>
+              <p class="hint">Newest first</p>
+            </div>
           </div>
 
           <div class="table-wrap">
@@ -147,7 +205,9 @@
               </thead>
               <tbody id="objects">
                 <tr>
-                  <td colspan="3" class="empty">Connect to load objects.</td>
+                  <td colspan="3" class="empty">
+                    Connect your phone to see its files.
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -155,6 +215,14 @@
         </section>
       </div>
     </main>
+
+    <div
+      id="notice"
+      class="notice"
+      role="status"
+      aria-live="polite"
+      hidden
+    ></div>
 
     <script src="demo.js"></script>
   </body>

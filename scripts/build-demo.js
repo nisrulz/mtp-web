@@ -3,7 +3,8 @@ import { readFile, writeFile } from 'node:fs/promises';
 const LIBRARY = new URL('../src/mtp.js', import.meta.url);
 const DEMO = new URL('../_site/script.js', import.meta.url);
 const OUTPUT = new URL('../_site/demo.js', import.meta.url);
-const IMPORT = "import Mtp, { OBJECT_FORMAT } from '../src/mtp.js';\n\n";
+const IMPORT =
+  "import Mtp, { OBJECT_FORMAT, STORAGE_ACCESS } from '../src/mtp.js';\n\n";
 
 function stripExports(source) {
   return source.replace(/^export default /gm, '').replace(/^export /gm, '');
