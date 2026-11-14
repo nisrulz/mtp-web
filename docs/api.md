@@ -91,7 +91,7 @@ Returns a description of one storage.
 | `storageId`          | The storage ID from `getStorageIDs()`.                    |
 | `storageType`        | MTP storage type code.                                    |
 | `filesystemType`     | MTP filesystem type code.                                 |
-| `accessCapability`   | `0` read-only, `1` read-write, `2` read-only with delete. |
+| `accessCapability`   | `0` read-write, `1` read-only, `2` read-only with delete. |
 | `readOnly`           | True unless `accessCapability` is read-write.             |
 | `maxCapacity`        | Total size in bytes.                                      |
 | `freeSpaceInBytes`   | Free space in bytes.                                      |
@@ -214,7 +214,7 @@ directly can use them.
 | `decodeObjectPropList(bytes)`                    | Decode a property list from `GetObjectPropList`.                                                            |
 | `MtpResponseError`                               | Error class described above.                                                                                |
 | `OBJECT_FORMAT`                                  | `{ UNDEFINED: 0x3000, ASSOCIATION: 0x3001 }`.                                                               |
-| `STORAGE_ACCESS`                                 | `{ READ_ONLY: 0, READ_WRITE: 1, READ_ONLY_WITH_DELETE: 2 }`.                                                |
+| `STORAGE_ACCESS`                                 | `{ READ_WRITE: 0, READ_ONLY: 1, READ_ONLY_WITH_DELETE: 2 }`.                                                |
 | `MTP_DATATYPE`                                   | Property list data type codes, for example `STRING` and `UINT32`.                                           |
 | `OBJECT_PROPERTY`                                | Common object property codes, for example `FILE_NAME`, `OBJECT_SIZE`, `PARENT_OBJECT`.                      |
 

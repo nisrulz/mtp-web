@@ -607,7 +607,7 @@ function propListPayload(elements) {
   return concatBytes([u32(elements.length), ...elements]);
 }
 
-function storageInfoPayload({ access = 1 } = {}) {
+function storageInfoPayload({ access = STORAGE_ACCESS.READ_WRITE } = {}) {
   const description = encodeMtpString('Internal storage');
   const label = encodeMtpString('Pixel');
   const out = new Uint8Array(26 + description.byteLength + label.byteLength);
@@ -656,6 +656,14 @@ test('getStorageIDs lists the storage IDs', async () => {
   assert.deepEqual(await mtp.getStorageIDs(), [0x00010001, 0x00020002]);
 });
 
+test('storage access capability values match the MTP spec', () => {
+  assert.deepEqual(STORAGE_ACCESS, {
+    READ_WRITE: 0x00,
+    READ_ONLY: 0x01,
+    READ_ONLY_WITH_DELETE: 0x02,
+  });
+});
+
 test('getStorageInfo decodes capacities and strings', async () => {
   const stream = concatBytes([
     response(OK, 0),
@@ -669,7 +677,7 @@ test('getStorageInfo decodes capacities and strings', async () => {
 
   const info = await mtp.getStorageInfo(0x00010001);
   assert.equal(info.storageId, 0x00010001);
-  assert.equal(info.accessCapability, 1);
+  assert.equal(info.accessCapability, STORAGE_ACCESS.READ_WRITE);
   assert.equal(info.readOnly, false);
   assert.equal(info.maxCapacity, 1024);
   assert.equal(info.freeSpaceInBytes, 512);
@@ -681,7 +689,11 @@ test('getStorageInfo decodes capacities and strings', async () => {
 test('a read-only storage is reported as readOnly', async () => {
   const stream = concatBytes([
     response(OK, 0),
-    dataPacket(0x1005, 1, storageInfoPayload({ access: 0 })),
+    dataPacket(
+      0x1005,
+      1,
+      storageInfoPayload({ access: STORAGE_ACCESS.READ_ONLY }),
+    ),
     response(OK, 1),
   ]);
 

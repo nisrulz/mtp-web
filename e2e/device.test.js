@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 
 import puppeteer from 'puppeteer';
 
+import { STORAGE_ACCESS } from '../src/mtp.js';
 import { startServer } from './server.js';
 
 const VENDOR_ID = parseHex(process.env.E2E_VENDOR_ID, 0x04e8);
@@ -265,7 +266,9 @@ test(
       const { ids, infos } = await call('storages');
       assert.ok(ids.length > 0, 'the device reports at least one storage');
 
-      const writable = infos.find(info => info.accessCapability === 1);
+      const writable = infos.find(
+        info => info.accessCapability === STORAGE_ACCESS.READ_WRITE,
+      );
       const storage = writable ?? infos[0];
       const storageId = storage.storageId;
 

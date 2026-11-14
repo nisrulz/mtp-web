@@ -98,8 +98,8 @@ const OBJECT_FORMAT = {
 
 /** Storage access capability values from GetStorageInfo. */
 const STORAGE_ACCESS = {
-  READ_ONLY: 0x00,
-  READ_WRITE: 0x01,
+  READ_WRITE: 0x00,
+  READ_ONLY: 0x01,
   READ_ONLY_WITH_DELETE: 0x02,
 };
 
