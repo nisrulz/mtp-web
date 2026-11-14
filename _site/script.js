@@ -1,4 +1,4 @@
-import Mtp, { OBJECT_FORMAT, STORAGE_ACCESS } from '../src/mtp.js';
+import Mtp, { isSupported, OBJECT_FORMAT, STORAGE_ACCESS } from '../src/mtp.js';
 
 const status = document.querySelector('#status');
 const connectButton = document.querySelector('#connect');
@@ -16,11 +16,91 @@ const folderPath = document.querySelector('#folder-path');
 const fileCount = document.querySelector('#file-count');
 const notice = document.querySelector('#notice');
 const themeToggle = document.querySelector('#theme-toggle');
+const logOutput = document.querySelector('#log');
+const copyLogButton = document.querySelector('#copy-log');
 
 let mtp = null;
 let selectedStorageId = null;
 let folderStack = [{ handle: 0xffffffff, name: 'Storage root' }];
 const storageInfo = new Map();
+const usbSupported = isSupported();
+const logLines = [];
+
+function logContext(context) {
+  if (!context) {
+    return '';
+  }
+  if (context.error instanceof Error) {
+    return ` ${context.error.name}: ${context.error.message}`;
+  }
+  try {
+    const text = JSON.stringify(context);
+    return text && text !== '{}' ? ` ${text}` : '';
+  } catch {
+    return '';
+  }
+}
+
+function appendLog(level, message, context) {
+  const line = `${new Date().toLocaleTimeString()} ${level.toUpperCase()} ${message}${logContext(
+    context,
+  )}`;
+  logLines.push(line);
+  if (logLines.length > 300) {
+    logLines.shift();
+  }
+  if (logOutput) {
+    logOutput.textContent = logLines.join('\n');
+    logOutput.scrollTop = logOutput.scrollHeight;
+  }
+  const consoleApi = globalThis.console;
+  const method = consoleApi?.[level] ?? consoleApi?.log;
+  method?.call(consoleApi, `[mtp-web] ${message}`, context ?? '');
+}
+
+const demoLogger = {
+  debug: (message, context) => appendLog('debug', message, context),
+  info: (message, context) => appendLog('info', message, context),
+  warn: (message, context) => appendLog('warn', message, context),
+  error: (message, context) => appendLog('error', message, context),
+};
+
+function copyLogWithSelection(text) {
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.append(area);
+  area.select();
+  const copied = document.execCommand?.('copy') ?? false;
+  area.remove();
+  return copied;
+}
+
+async function copyConnectionLog() {
+  const text = logLines.join('\n') || 'No log entries.';
+  let copied = false;
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    }
+  } catch {
+    // Some browsers block the Clipboard API outside a secure context.
+  }
+
+  if (!copied) {
+    copied = copyLogWithSelection(text);
+  }
+
+  if (copied) {
+    setNotice('Connection log copied');
+  } else {
+    setNotice('Could not copy the log. Select the text and copy it.', 'danger');
+  }
+}
 
 const THEME_KEY = 'mtp-web-theme';
 const ICONS = {
@@ -37,6 +117,7 @@ const ICONS = {
   upload: ['M12 16V4', 'm6 10 6-6 6 6', 'M4 20h16'],
   download: ['M12 4v12', 'm6 10 6 6 6-6', 'M4 20h16'],
   trash: ['M3 6h18', 'M8 6V4h8v2', 'M19 6l-1 14H6L5 6', 'M10 11v6', 'M14 11v6'],
+  copy: ['M8 8h11v11H8z', 'M5 16V5h11'],
   sun: [
     'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
     'M12 2v2',
@@ -144,6 +225,16 @@ function describeError(error, fallback) {
   if (/AccessDenied|denied/i.test(message)) {
     return 'Your phone denied that action.';
   }
+  if (
+    /OperationNotSupported|ParameterNotSupported|InvalidParameter/i.test(
+      message,
+    )
+  ) {
+    return 'Your phone does not support that action.';
+  }
+  if (/out of sync|deadline exceeded/i.test(message)) {
+    return 'The phone connection was lost. Connect again.';
+  }
   if (/not ready|not found|reconnect|session/i.test(message)) {
     return 'Your phone is not ready. Reconnect it and try again.';
   }
@@ -158,20 +249,37 @@ function itemCount(count) {
   return `${count} item${count === 1 ? '' : 's'}`;
 }
 
-function resetTable(message = 'Connect your phone to see its files.') {
+function resetTable(
+  title = 'No phone connected',
+  detail = 'Connect your phone to browse its files.',
+) {
   table.replaceChildren();
   const row = document.createElement('tr');
   const cell = document.createElement('td');
   cell.colSpan = 3;
   cell.className = 'empty';
-  cell.textContent = message;
+
+  const heading = document.createElement('p');
+  heading.className = 'empty-title';
+  heading.textContent = title;
+
+  const hint = document.createElement('p');
+  hint.className = 'empty-detail';
+  hint.textContent = detail;
+
+  cell.append(heading, hint);
   row.append(cell);
   table.append(row);
 }
 
 function updateConnectionState() {
-  connectButton.textContent = mtp ? 'Change phone' : 'Connect phone';
+  connectButton.textContent = mtp ? 'Switch phone' : 'Connect phone';
   setIcon(connectButton, 'phone');
+  connectButton.classList.toggle('primary', !mtp);
+  connectButton.disabled = !usbSupported;
+  connectButton.title = usbSupported
+    ? ''
+    : 'This browser does not support WebUSB. Use Chrome or Edge.';
   disconnectButton.disabled = !mtp;
 }
 
@@ -193,16 +301,14 @@ async function disconnect({ silent = false } = {}) {
   resetTable();
   setFileCount('No items', 'neutral');
   updateUploadState();
-  connectButton.disabled = true;
-
-  await current?.close().catch(() => {});
-
-  connectButton.disabled = false;
+  connectButton.disabled = !usbSupported;
   updateConnectionState();
 
   if (!silent) {
     setStatus('Phone disconnected', 'neutral');
   }
+
+  await current?.close().catch(() => {});
 }
 
 function currentFolder() {
@@ -246,7 +352,14 @@ function goBackOneFolder() {
 function updateUploadState() {
   if (!mtp) {
     uploadButton.disabled = true;
-    uploadButton.title = '';
+    uploadButton.title = 'Connect your phone to upload files.';
+    storageNote.textContent = '';
+    return;
+  }
+
+  if (currentStorage() == null) {
+    uploadButton.disabled = true;
+    uploadButton.title = 'No storage is available.';
     storageNote.textContent = '';
     return;
   }
@@ -259,6 +372,15 @@ function updateUploadState() {
   storageNote.textContent = readOnly
     ? 'This storage is read only. You can download files, but you cannot upload.'
     : '';
+}
+
+function setUploadLabel(text) {
+  const label = [...uploadButton.childNodes].find(
+    node => node.nodeType === Node.TEXT_NODE,
+  );
+  if (label) {
+    label.textContent = text;
+  }
 }
 
 function formatBytes(bytes) {
@@ -458,26 +580,47 @@ function addRow(object) {
 }
 
 async function loadObjects() {
-  table.replaceChildren();
-  if (selectedStorageId == null) return;
-
-  const handles = await mtp.getObjectHandles(
-    currentStorage(),
-    0,
-    currentFolder().handle,
-  );
-  handles.sort((a, b) => b - a);
-
-  if (handles.length === 0) {
-    resetTable('This folder is empty.');
-    setFileCount(itemCount(0), 'neutral');
+  if (selectedStorageId == null) {
+    resetTable(
+      mtp ? 'No storage is available' : 'No phone connected',
+      mtp
+        ? 'Unlock your phone and allow file access.'
+        : 'Connect your phone to browse its files.',
+    );
+    setFileCount('No items', 'neutral');
     return;
   }
 
-  for (const handle of handles) {
-    addRow(await mtp.getObjectInfo(handle));
+  resetTable('Loading files…', 'This can take a moment on a large folder.');
+  setFileCount('Loading…', 'warning');
+
+  try {
+    const handles = await mtp.getObjectHandles(
+      currentStorage(),
+      0,
+      currentFolder().handle,
+    );
+    handles.sort((a, b) => b - a);
+
+    if (handles.length === 0) {
+      resetTable(
+        'This folder is empty',
+        'Upload a file to add it to this folder.',
+      );
+      setFileCount(itemCount(0), 'neutral');
+      return;
+    }
+
+    table.replaceChildren();
+    for (const handle of handles) {
+      addRow(await mtp.getObjectInfo(handle));
+    }
+    setFileCount(itemCount(handles.length), 'success');
+  } catch (error) {
+    resetTable('Could not load files', 'Try again or reconnect your phone.');
+    setFileCount('No items', 'neutral');
+    throw error;
   }
-  setFileCount(itemCount(handles.length), 'success');
 }
 
 connectButton.addEventListener('click', async () => {
@@ -512,7 +655,10 @@ connectButton.addEventListener('click', async () => {
   connectButton.disabled = true;
 
   try {
-    mtp = new Mtp(null, null, device);
+    mtp = new Mtp(null, null, device, {
+      logLevel: 'debug',
+      logger: demoLogger,
+    });
     mtp.addEventListener('error', event => {
       setNotice(describeError(event.error ?? event, 'Phone error'), 'danger');
     });
@@ -526,9 +672,26 @@ connectButton.addEventListener('click', async () => {
     updateUploadState();
     setStatus(`Connected to ${device.productName || 'your phone'}`, 'success');
   } catch (error) {
+    appendLog('error', 'Connection failed', { error });
+    const unhealthy = mtp && !mtp.isTransportHealthy();
+
+    if (unhealthy) {
+      setStatus('Resetting phone connection…', 'warning');
+      await mtp
+        .resetUsbDevice()
+        .catch(resetError =>
+          appendLog('warn', 'USB reset failed', { error: resetError }),
+        );
+    }
+
     await disconnect({ silent: true });
-    setStatus('Phone not connected', 'neutral');
-    setNotice(describeError(error, 'Could not connect'), 'danger');
+    setStatus('Phone not connected', 'danger');
+    setNotice(
+      unhealthy
+        ? 'The phone connection was reset. Unplug the USB cable, reconnect the phone, then connect again.'
+        : describeError(error, 'Could not connect'),
+      'danger',
+    );
   } finally {
     connectButton.disabled = false;
     updateConnectionState();
@@ -607,22 +770,58 @@ async function uploadSelectedFile() {
   }
 
   uploadButton.disabled = true;
+  uploadButton.setAttribute('aria-busy', 'true');
+  setUploadLabel('Uploading…');
 
   try {
     const data = new Uint8Array(await file.arrayBuffer());
-    await mtp.uploadFile({
+    setNotice(`Uploading ${file.name}…`, 'warning');
+    const handle = await mtp.uploadFile({
       storageId: currentStorage(),
       parentObjectHandle: currentFolder().handle,
       filename: file.name,
       data,
       format: OBJECT_FORMAT.UNDEFINED,
+      onProgress: sent =>
+        setNotice(
+          `Uploading ${file.name}… ${formatBytes(sent)} of ${formatBytes(
+            data.byteLength,
+          )}`,
+          'warning',
+        ),
     });
-    setNotice(`Uploaded ${file.name}`);
+
+    let uploadedName = file.name;
+    try {
+      uploadedName = (await mtp.getObjectInfo(handle)).filename;
+    } catch (error) {
+      appendLog('warn', 'Could not read the uploaded file name', { error });
+    }
+
+    setNotice(`Uploaded ${uploadedName}`);
     await loadObjects();
   } catch (error) {
+    console.error('Upload failed', error);
+    if (mtp && !mtp.isTransportHealthy()) {
+      setStatus('Resetting phone connection…', 'warning');
+      await mtp
+        .resetUsbDevice()
+        .catch(resetError =>
+          appendLog('warn', 'USB reset failed', { error: resetError }),
+        );
+      await disconnect({ silent: true });
+      setStatus('Phone not connected', 'danger');
+      setNotice(
+        'The phone connection was reset. Unplug the USB cable, reconnect the phone, then connect again.',
+        'danger',
+      );
+      return;
+    }
     setNotice(describeError(error, 'Could not upload that file'), 'danger');
   } finally {
     fileInput.value = '';
+    uploadButton.removeAttribute('aria-busy');
+    setUploadLabel('Upload file');
     updateUploadState();
   }
 }
@@ -646,10 +845,29 @@ setIcon(folderBackButton, 'back');
 setIcon(refreshButton, 'refresh');
 setIcon(disconnectButton, 'disconnect');
 setIcon(uploadButton, 'upload');
+if (copyLogButton) {
+  setIcon(copyLogButton, 'copy');
+  copyLogButton.addEventListener('click', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    copyConnectionLog();
+  });
+}
 folderBackButton.addEventListener('click', goBackOneFolder);
 updateFolderHeader();
 updateThemeToggle();
 updateConnectionState();
+updateUploadState();
+resetTable();
+appendLog('info', 'Demo ready');
+
+if (!usbSupported) {
+  setStatus('WebUSB is not supported', 'danger');
+  setNotice(
+    'Open this page in Chrome or Edge on a desktop computer.',
+    'danger',
+  );
+}
 
 window.addEventListener('beforeunload', () => {
   mtp?.close();

@@ -29,144 +29,155 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <main class="app">
-      <header class="hero">
-        <div class="hero-copy">
-          <div class="brand">
-            <img
-              class="brand-logo"
-              src="img/logo.svg"
-              alt=""
-              width="44"
-              height="44"
-            />
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <img
+            class="brand-logo"
+            src="img/logo.svg"
+            alt=""
+            width="40"
+            height="40"
+          />
+          <div class="brand-text">
             <p class="eyebrow">mtp-web</p>
+            <h1>Phone files</h1>
           </div>
-          <h1>Browse your phone</h1>
-          <p class="lede">
-            Connect your Android phone to browse, download, upload and delete
-            files from this page.
-          </p>
         </div>
-        <div class="hero-meta">
+
+        <div class="topbar-actions">
+          <span id="status" class="status" role="status" aria-live="polite">
+            Phone not connected
+          </span>
+          <button id="connect" class="button primary" type="button">
+            Connect phone
+          </button>
+          <button
+            id="disconnect"
+            class="button icon-button"
+            type="button"
+            aria-label="Disconnect phone"
+            title="Disconnect phone"
+            disabled
+          ></button>
           <button
             id="theme-toggle"
-            class="button icon-button theme-toggle"
+            class="button icon-button"
             type="button"
             aria-label="Switch to dark theme"
             title="Switch to dark theme"
           ></button>
-          <p class="hint">
-            Open this page in Chrome or Edge, then select your phone in the
-            browser prompt.
-          </p>
-          <p class="hero-links">
-            <a href="https://github.com/nisrulz/mtp-web">mtp-web on GitHub</a>
-            <span aria-hidden="true">·</span>
-            <a
-              href="https://github.com/nisrulz/mtp-web/blob/master/docs/usage.md"
-            >
-              Usage guide
-            </a>
-          </p>
         </div>
       </header>
 
-      <div class="workspace">
-        <section
-          class="card connection-pane"
-          aria-labelledby="connection-heading"
-        >
-          <div class="card-header">
-            <h2 id="connection-heading">Connect your phone</h2>
-            <span id="status" class="status" role="status" aria-live="polite">
-              Phone not connected
-            </span>
-          </div>
-
-          <div class="toolbar">
-            <button id="connect" class="button primary" type="button">
-              Connect phone
-            </button>
-            <button
-              id="disconnect"
-              class="button icon-button"
-              type="button"
-              aria-label="Disconnect phone"
-              title="Disconnect phone"
-              disabled
-            ></button>
-            <p class="hint">
-              Select your phone in the browser prompt and allow access.
-            </p>
-          </div>
-
-          <div class="toolbar">
-            <p class="hint">
-              Unlock your phone, choose <strong>File Transfer / MTP</strong>,
-              and close other apps that use your phone. Your files stay on your
-              device; this page does not send them to a server.
-            </p>
-          </div>
-
-          <div class="toolbar">
-            <label id="storage-label" for="storage-button">Storage</label>
-            <div class="storage-picker">
-              <button
-                id="storage-button"
-                class="select-button"
-                type="button"
-                aria-haspopup="listbox"
-                aria-expanded="false"
-                aria-controls="storage-menu"
-                aria-labelledby="storage-label storage-value"
-                disabled
-              >
-                <span id="storage-value">No storage found</span>
-                <svg
-                  class="select-chevron"
-                  viewBox="0 0 20 20"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="m5 8 5 5 5-5"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
-                </svg>
-              </button>
-              <ul
-                id="storage-menu"
-                class="select-menu"
-                role="listbox"
-                aria-labelledby="storage-label"
-                hidden
-              ></ul>
+      <main class="workspace">
+        <aside class="sidebar">
+          <section class="card" aria-labelledby="storage-heading">
+            <div class="card-header">
+              <h2 id="storage-heading">Storage</h2>
             </div>
-            <button
-              id="refresh"
-              class="button icon-button"
-              type="button"
-              aria-label="Refresh files"
-              title="Refresh files"
-              disabled
-            ></button>
-            <p id="storage-note" class="hint" role="status"></p>
-          </div>
+            <div class="card-body">
+              <label
+                id="storage-label"
+                class="field-label"
+                for="storage-button"
+              >
+                Choose a storage
+              </label>
+              <div class="storage-picker">
+                <button
+                  id="storage-button"
+                  class="select-button"
+                  type="button"
+                  aria-haspopup="listbox"
+                  aria-expanded="false"
+                  aria-controls="storage-menu"
+                  aria-labelledby="storage-label storage-value"
+                  disabled
+                >
+                  <span id="storage-value">No storage found</span>
+                  <svg
+                    class="select-chevron"
+                    viewBox="0 0 20 20"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="m5 8 5 5 5-5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </button>
+                <ul
+                  id="storage-menu"
+                  class="select-menu"
+                  role="listbox"
+                  aria-labelledby="storage-label"
+                  hidden
+                ></ul>
+              </div>
+              <p id="storage-note" class="hint" role="status"></p>
+            </div>
+          </section>
 
-          <div class="toolbar">
-            <input type="file" id="file" hidden />
-            <button id="upload" class="button primary" type="button" disabled>
-              Upload file
-            </button>
-          </div>
-        </section>
+          <section class="card help-card" aria-labelledby="help-heading">
+            <div class="card-header">
+              <h2 id="help-heading">Before you connect</h2>
+            </div>
+            <div class="card-body">
+              <ol class="steps">
+                <li>Unlock your phone.</li>
+                <li>
+                  Choose <strong>File Transfer / MTP</strong> in the USB prompt.
+                </li>
+                <li>
+                  Close other apps that use your phone, such as Android File
+                  Transfer or adb.
+                </li>
+              </ol>
+              <p class="hint">
+                Use Chrome or Edge. Your files stay on your device. This page
+                does not send them to a server.
+              </p>
+              <p class="hero-links">
+                <a
+                  href="https://github.com/nisrulz/mtp-web"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >mtp-web on GitHub</a
+                >
+                <span aria-hidden="true">·</span>
+                <a
+                  href="https://github.com/nisrulz/mtp-web/blob/master/docs/usage.md"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Usage guide
+                </a>
+              </p>
+            </div>
+          </section>
 
-        <section class="card objects-pane" aria-labelledby="objects-heading">
-          <div class="card-header">
+          <section id="diagnostics" class="card log-card">
+            <div class="log-header">
+              <span>Connection log</span>
+              <button
+                id="copy-log"
+                class="button small icon-button"
+                type="button"
+                aria-label="Copy connection log"
+                title="Copy connection log"
+              ></button>
+            </div>
+            <pre id="log" class="log" aria-live="polite"></pre>
+          </section>
+        </aside>
+
+        <section class="card files-pane" aria-labelledby="objects-heading">
+          <div class="card-header files-header">
             <div class="folder-heading">
               <button
                 id="folder-back"
@@ -176,12 +187,12 @@
                 title="Go back one folder"
                 disabled
               ></button>
-              <div>
+              <div class="folder-text">
                 <h2 id="objects-heading">Files</h2>
                 <p id="folder-path" class="hint">Storage root</p>
               </div>
             </div>
-            <div class="files-meta">
+            <div class="files-actions">
               <span
                 id="file-count"
                 class="status"
@@ -190,7 +201,18 @@
               >
                 No items
               </span>
-              <p class="hint">Newest first</p>
+              <button
+                id="refresh"
+                class="button icon-button"
+                type="button"
+                aria-label="Refresh files"
+                title="Refresh files"
+                disabled
+              ></button>
+              <input type="file" id="file" hidden />
+              <button id="upload" class="button primary" type="button" disabled>
+                Upload file
+              </button>
             </div>
           </div>
 
@@ -206,15 +228,18 @@
               <tbody id="objects">
                 <tr>
                   <td colspan="3" class="empty">
-                    Connect your phone to see its files.
+                    <p class="empty-title">No phone connected</p>
+                    <p class="empty-detail">
+                      Connect your phone to browse its files.
+                    </p>
                   </td>
                 </tr>
               </tbody>
             </table>
           </div>
         </section>
-      </div>
-    </main>
+      </main>
+    </div>
 
     <div
       id="notice"
