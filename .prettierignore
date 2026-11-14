@@ -1,0 +1,7 @@
+.trash/
+_site/demo.js
+coverage/
+e2e/artifacts/
+node_modules/
+package-lock.json
+yarn.lock
