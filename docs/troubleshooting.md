@@ -48,8 +48,36 @@ again. The read timeout is 30 seconds of idle time.
 
 A read or write failed or timed out. A late reply can now arrive during the next
 command. The library rejects commands after this error instead of reading the
-wrong container. Close the `Mtp` instance, reconnect the device, and start a new
-instance.
+wrong container. The failure sets `transportHealthy` to false. Check it with
+`isTransportHealthy()`.
+
+Use `recover()` when the device is still connected. It closes and opens the USB
+transport, clears the buffered bytes, resets the transaction ID and starts a new
+session. When the device was disconnected, close the `Mtp` instance and create a
+new one.
+
+## Partial reads fail with `ParameterNotSupported` or `InvalidParameter`
+
+`getPartial()` tries the high offset word first. If the device rejects that
+order, the method retries once with the low word first. The working order is
+cached in `partialOrder`. `partialState` becomes `supported`.
+
+If both orders fail, `partialState` becomes `unsupported` and the method throws
+the last error. The library does not fall back to `getFile()`. Use `getFile()`
+in your application when `partialState` is `unsupported`.
+
+## A thumbnail is empty
+
+A zero-byte thumbnail is valid. `getThumb()` returns an empty `Uint8Array`. Check
+`thumbnail.byteLength` before you decode it. Do not treat an empty result as a
+transfer failure.
+
+## A browser build tries to load `usb.darwin-arm64`
+
+The bundler resolved the Node entry. Import `mtp-web` with a bundler that
+supports the `exports` field. Do not alias the package to `src/node.js`. The
+browser condition resolves `src/mtp.js`, which has no native import. The default
+`src/node.js` entry is for Node.js only.
 
 ## `Timed out while claiming the MTP interface` or `Timed out while opening the MTP device`
 
@@ -60,15 +88,17 @@ programs that use the device. Unplug the device and connect it again.
 
 - The page is not in a Chromium-based browser, or WebUSB is disabled.
 - The page is not a secure context. Use `https://` or `http://localhost`.
-- In Electron, `navigator.usb` is absent by design. `mtp-web` detects Electron
-  and loads the `usb` package. A sandboxed renderer without Node integration
-  must pass a `USBDevice` object.
+- In Node.js, the package must resolve the `node` entry. Node ESM imports do
+  this through the `exports` map. The entry installs `usb.webusb`.
+- In Electron, use the Node entry in the main process. A sandboxed renderer
+  without Node integration must pass a `USBDevice` object.
 
 ## `Invalid MTP container length`
 
 The device sends a header with an impossible length. The stream is out of sync
-after a failed transfer or a disconnect. Close the device and start a new `Mtp`
-instance.
+after a failed transfer or a disconnect. Call `recover()` when the device is
+still connected. Close the device and start a new `Mtp` instance after a
+disconnect.
 
 ## `MTP container length ... exceeds the limit`
 
@@ -79,7 +109,8 @@ untrusted device.
 ## `MTP transfer deadline exceeded`
 
 A command did not finish within `transferDeadlineMs`. The default is 5 minutes.
-Raise the option for a slow transfer. Reconnect a device that stopped answering.
+Raise the option for a slow transfer. Call `recover()` when the device is still
+connected. Reconnect a device that stopped answering.
 
 ## `Too many event blocks from the MTP device`
 
@@ -97,6 +128,62 @@ make rebuild
 ```
 
 The library does not support a Node version below 18.
+
+## An upload stops with `AbortError` or `Upload ended after ... bytes`
+
+An `AbortSignal` stops the upload between chunks. An abort before the data phase
+throws `AbortError` and keeps the transport healthy. An abort after the data
+phase starts also throws `AbortError`, but the device still waits for the
+declared number of bytes. The transport becomes unhealthy. Reconnect and create
+a new `Mtp` instance.
+
+A streaming source must yield exactly `size` bytes. A short source throws before
+the final response and marks the transport unhealthy. Check the source length
+before you start the upload.
+
+## An upload stalls after the last byte
+
+Some devices wait for the end of the USB transfer instead of the MTP container
+length. The library sends a zero-length packet when the file size is a multiple
+of the endpoint packet size. This packet ends the data phase. If the upload still
+stalls, the device may be busy. Call `recover()` and try again. Do not change the
+file size to work around the problem.
+
+## `OperationNotSupported` from a property or control command
+
+The device does not implement the command. Read `OperationsSupported` from
+`getDeviceInfo()` before you call a command. A phone usually supports object
+properties and references but can omit device properties, capture and
+`formatStore()`.
+
+## `readEvent()` times out
+
+The device did not send an event before the timeout. WebUSB cannot cancel the
+pending read, so the transport is now out of sync. Call `recover()` before the
+next command. Use `readEvent()` only when the device is expected to send an
+event.
+
+## `Timed out waiting for the MTP device to accept data`
+
+The phone's bulk OUT endpoint stopped accepting bytes. The library sends the
+data-container header and the first payload bytes in one transfer and uses
+512-byte chunks. If the timeout still occurs, the device is stalled. The library
+clears the OUT halt. Call `resetUsbDevice()`, unplug the USB cable, reconnect the
+phone and connect again. Enable `logLevel: 'debug'` to see the last successful
+USB write and MTP command.
+
+## The phone stays stuck after a failed upload
+
+A pending WebUSB transfer cannot be cancelled. A page refresh does not always
+release the phone's endpoint. Call `resetUsbDevice()`, unplug the USB cable,
+reconnect the phone, then connect again. The demo shows these steps in its
+**Connection log** panel.
+
+## Upload fails for a file above 4 GiB
+
+The SendObjectInfo ObjectInfo size field is 32 bits. `uploadFile()` rejects a
+larger file before it sends data. Split the file, or use a tool that supports a
+64-bit object size.
 
 ## Upload fails with `StoreReadOnly`
 

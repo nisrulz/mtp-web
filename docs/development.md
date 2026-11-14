@@ -3,14 +3,20 @@
 ## Project layout
 
 ```text
-src/mtp.js                 library entry point
+src/mtp.js                 browser-safe library entry point
+src/node.js                Node.js entry that installs the usb shim
+src/mtp.d.ts               hand-written TypeScript declarations
+src/usb.d.ts               type shim for the usb package
 test/mtp.test.js           unit tests with a fake USB device
 test/usb.test.js           dependency contract tests for usb
+test/browser.test.js       browser entry and Vite build tests
+test/types/consumer.ts     TypeScript consumer fixture
 e2e/device.test.js         physical-device WebUSB tests with Puppeteer
 e2e/fixture.html           test page for the E2E suite
 e2e/server.js              local HTTP server for the E2E page
 scripts/manual-test.js     hardware smoke test
 scripts/build-demo.js      builds the standalone demo bundle
+scripts/release.sh         releases a version and publishes it
 _site/index.html           browser demo page
 _site/script.js            browser demo source logic
 _site/demo.js              generated standalone demo bundle
@@ -19,6 +25,8 @@ _site/img/logo.svg         generated demo logo
 img/logo.svg               project logo and favicon source
 docs/                      user and maintainer guides
 Makefile                   developer commands
+tsconfig.json              JavaScript type-check options
+tsconfig.types.json        TypeScript fixture options
 ```
 
 ## Setup
@@ -39,13 +47,17 @@ Run `make help` to list every target.
 make check
 ```
 
-`make check` runs 5 checks:
+`make check` runs 6 checks:
 
 1. `make format-check` checks the formatting with Prettier.
 2. `make lint` checks the code with ESLint.
 3. `make typecheck` checks the JavaScript types with `tsc` and the JSDoc types.
-4. `make demo-bundle-check` checks that the standalone demo is current.
-5. `make test` runs the unit tests.
+4. `make typecheck-types` checks the TypeScript consumer fixture and `src/mtp.d.ts`.
+5. `make demo-bundle-check` checks that the standalone demo is current.
+6. `make test` runs the unit tests.
+
+The unit tests include a Vite browser build. Vite must be installed. The build
+imports `mtp-web` and confirms that the browser entry does not resolve `usb`.
 
 Run `make format` to write the formatting changes. Run `make lint-fix` to fix
 the issues that ESLint can fix. Run `make test` alone during development.
@@ -133,14 +145,36 @@ permission.
 
 ## Publishing
 
+Bump `version` in a pull request. Merge the pull request into the default
+branch. Then create the tag from that merged commit.
+
+The release script does these steps:
+
+1. It switches to the default branch and updates it.
+2. It verifies that `package.json` on the default branch has the requested
+   version.
+3. It runs `make check`.
+4. It verifies that the local default branch matches the remote branch.
+5. It tags the current commit.
+6. It pushes the tag to GitHub.
+7. It publishes the package to npm.
+
+```bash
+make release-dry-run VERSION=0.2.0
+make release VERSION=0.2.0
+```
+
+The version must equal the version in `package.json` on the default branch. The
+script does not bump the version. The working tree must have no changes. The
+`npm` account must be authenticated. The script stops when a check fails, when
+the tag exists, when the version is not yet merged, or when the version is
+already published.
+
+A dry run does not run the checks. It does not change the repository. It does
+not publish the package.
+
 The published tarball contains `src/`, `README.md`, `LICENSE` and `NOTICE`. The
 `files` field in `package.json` controls the list. Keep `LICENSE` and `NOTICE`
 in the list. BSD-2-Clause requires the notice in binary distributions.
 
-```bash
-make check
-make pack
-make publish
-```
-
-Bump `version` before each publish.
+Run `make pack` to inspect the tarball before a release.

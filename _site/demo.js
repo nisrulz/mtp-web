@@ -2,16 +2,62 @@
 (() => {
   'use strict';
 
-let isBrowser,
-  usb = null;
+let usbTransport = null;
 
-if (typeof navigator !== 'undefined') {
-  const userAgent = navigator.userAgent.toLowerCase();
-  isBrowser =
-    !userAgent.includes(' electron/') && typeof window !== 'undefined';
-} else {
-  // Node.js process
-  isBrowser = false;
+/**
+ * Set the WebUSB transport used to discover a device. The Node.js entry sets
+ * the `usb` shim here. Pass `null` to clear it.
+ * @param {{
+ *   getDevices: () => Promise<USBDevice[]>,
+ *   requestDevice: (options: {
+ *     filters: Array<{vendorId: number, productId?: number}>
+ *   }) => Promise<USBDevice>
+ * }|null} transport
+ */
+function setUsbTransport(transport) {
+  usbTransport = transport ?? null;
+}
+
+/**
+ * @typedef {object} NavigatorLike
+ * @property {string} [userAgent]
+ * @property {{requestDevice?: unknown, getDevices?: unknown}|null} [usb]
+ */
+
+const FIREFOX_USER_AGENT = /\b(?:Firefox|FxiOS)\//i;
+const SAFARI_USER_AGENT = /\bSafari\//i;
+const CHROMIUM_USER_AGENT = /\b(?:Chrome|Chromium|Edg|OPR)\//i;
+
+function isFirefoxOrSafari(userAgent) {
+  if (FIREFOX_USER_AGENT.test(userAgent)) {
+    return true;
+  }
+  return (
+    SAFARI_USER_AGENT.test(userAgent) && !CHROMIUM_USER_AGENT.test(userAgent)
+  );
+}
+
+/**
+ * Returns true when this browser can use WebUSB for MTP. Firefox and Safari do
+ * not implement WebUSB, so they return false.
+ * @param {NavigatorLike} [navigatorLike]
+ * @returns {boolean}
+ */
+function isSupported(navigatorLike = globalThis.navigator) {
+  if (!navigatorLike) {
+    return false;
+  }
+
+  if (isFirefoxOrSafari(navigatorLike.userAgent ?? '')) {
+    return false;
+  }
+
+  const usb = navigatorLike.usb;
+  return Boolean(
+    usb &&
+    typeof usb.requestDevice === 'function' &&
+    typeof usb.getDevices === 'function',
+  );
 }
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -56,6 +102,7 @@ const TRANSPORT_OUT_OF_SYNC =
   'Reconnect the device before you send another command.';
 
 const CODE = {
+  GET_DEVICE_INFO: { value: 0x1001, name: 'GetDeviceInfo' },
   OPEN_SESSION: { value: 0x1002, name: 'OpenSession' },
   CLOSE_SESSION: { value: 0x1003, name: 'CloseSession' },
   GET_STORAGE_IDS: { value: 0x1004, name: 'GetStorageIDs' },
@@ -64,12 +111,38 @@ const CODE = {
   GET_OBJECT_HANDLES: { value: 0x1007, name: 'GetObjectHandles' },
   GET_OBJECT_INFO: { value: 0x1008, name: 'GetObjectInfo' },
   GET_OBJECT: { value: 0x1009, name: 'GetObject' },
+  GET_THUMB: { value: 0x100a, name: 'GetThumb' },
   DELETE_OBJECT: { value: 0x100b, name: 'DeleteObject' },
   SEND_OBJECT_INFO: { value: 0x100c, name: 'SendObjectInfo' },
   SEND_OBJECT: { value: 0x100d, name: 'SendObject' },
+  INITIATE_CAPTURE: { value: 0x100e, name: 'InitiateCapture' },
+  FORMAT_STORE: { value: 0x100f, name: 'FormatStore' },
+  RESET_DEVICE: { value: 0x1010, name: 'ResetDevice' },
+  SELF_TEST: { value: 0x1011, name: 'SelfTest' },
+  SET_OBJECT_PROTECTION: { value: 0x1012, name: 'SetObjectProtection' },
+  POWER_DOWN: { value: 0x1013, name: 'PowerDown' },
+  GET_DEVICE_PROP_DESC: { value: 0x1014, name: 'GetDevicePropDesc' },
+  GET_DEVICE_PROP_VALUE: { value: 0x1015, name: 'GetDevicePropValue' },
+  SET_DEVICE_PROP_VALUE: { value: 0x1016, name: 'SetDevicePropValue' },
+  RESET_DEVICE_PROP_VALUE: { value: 0x1017, name: 'ResetDevicePropValue' },
+  TERMINATE_OPEN_CAPTURE: { value: 0x1018, name: 'TerminateOpenCapture' },
+  MOVE_OBJECT: { value: 0x1019, name: 'MoveObject' },
+  COPY_OBJECT: { value: 0x101a, name: 'CopyObject' },
+  GET_PARTIAL_OBJECT: { value: 0x101b, name: 'GetPartialObject' },
+  INITIATE_OPEN_CAPTURE: { value: 0x101c, name: 'InitiateOpenCapture' },
+  GET_PARTIAL_OBJECT_64: { value: 0x95c1, name: 'GetPartialObject64' },
+  GET_OBJECT_PROPS_SUPPORTED: {
+    value: 0x9801,
+    name: 'GetObjectPropsSupported',
+  },
+  GET_OBJECT_PROP_DESC: { value: 0x9802, name: 'GetObjectPropDesc' },
   GET_OBJECT_PROP_VALUE: { value: 0x9803, name: 'GetObjectPropValue' },
+  SET_OBJECT_PROP_VALUE: { value: 0x9804, name: 'SetObjectPropValue' },
   GET_OBJECT_PROP_LIST: { value: 0x9805, name: 'GetObjectPropList' },
+  SET_OBJECT_PROP_LIST: { value: 0x9806, name: 'SetObjectPropList' },
   SEND_OBJECT_PROP_LIST: { value: 0x9808, name: 'SendObjectPropList' },
+  GET_OBJECT_REFERENCES: { value: 0x9810, name: 'GetObjectReferences' },
+  SET_OBJECT_REFERENCES: { value: 0x9811, name: 'SetObjectReferences' },
   OBJECT_FILE_NAME: { value: 0xdc07, name: 'Object file name' },
   OK: { value: 0x2001, name: 'OK' },
   GENERAL_ERROR: { value: 0x2002, name: 'GeneralError' },
@@ -88,6 +161,96 @@ const CODE = {
   INVALID_PARAMETER: { value: 0x201d, name: 'Invalid parameter' },
   SESSION_ALREADY_OPEN: { value: 0x201e, name: 'SessionAlreadyOpen' },
   TRANSACTION_CANCELLED: { value: 0x201f, name: 'TransactionCancelled' },
+};
+
+const EVENT = {
+  UNDEFINED: { value: 0x4000, name: 'UndefinedEvent' },
+  CANCEL_TRANSACTION: { value: 0x4001, name: 'CancelTransaction' },
+  OBJECT_ADDED: { value: 0x4002, name: 'ObjectAdded' },
+  OBJECT_REMOVED: { value: 0x4003, name: 'ObjectRemoved' },
+  STORE_ADDED: { value: 0x4004, name: 'StoreAdded' },
+  STORE_REMOVED: { value: 0x4005, name: 'StoreRemoved' },
+  DEVICE_PROP_CHANGED: { value: 0x4006, name: 'DevicePropChanged' },
+  OBJECT_INFO_CHANGED: { value: 0x4007, name: 'ObjectInfoChanged' },
+  DEVICE_INFO_CHANGED: { value: 0x4008, name: 'DeviceInfoChanged' },
+  REQUEST_OBJECT_TRANSFER: { value: 0x4009, name: 'RequestObjectTransfer' },
+  STORE_FULL: { value: 0x400a, name: 'StoreFullEvent' },
+  DEVICE_RESET: { value: 0x400b, name: 'DeviceReset' },
+  STORAGE_INFO_CHANGED: { value: 0x400c, name: 'StorageInfoChanged' },
+  CAPTURE_COMPLETE: { value: 0x400d, name: 'CaptureComplete' },
+  UNREPORTED_STATUS: { value: 0x400e, name: 'UnreportedStatus' },
+  OBJECT_PROP_CHANGED: { value: 0x400f, name: 'ObjectPropChanged' },
+};
+
+/** Event codes used by MTP event containers. */
+const EVENT_CODE = Object.fromEntries(
+  Object.entries(EVENT).map(([key, entry]) => [key, entry.value]),
+);
+
+/** Standard MTP device property codes. */
+const DEVICE_PROPERTY = {
+  UNDEFINED: 0x5000,
+  BATTERY_LEVEL: 0x5001,
+  FUNCTIONAL_MODE: 0x5002,
+  IMAGE_SIZE: 0x5003,
+  COMPRESSION_SETTING: 0x5004,
+  WHITE_BALANCE: 0x5005,
+  RGB_GAIN: 0x5006,
+  F_NUMBER: 0x5007,
+  FOCAL_LENGTH: 0x5008,
+  FOCUS_DISTANCE: 0x5009,
+  FOCUS_MODE: 0x500a,
+  EXPOSURE_METERING_MODE: 0x500b,
+  FLASH_MODE: 0x500c,
+  EXPOSURE_TIME: 0x500d,
+  EXPOSURE_PROGRAM_MODE: 0x500e,
+  EXPOSURE_INDEX: 0x500f,
+  EXPOSURE_BIAS_COMPENSATION: 0x5010,
+  DATE_TIME: 0x5011,
+  CAPTURE_DELAY: 0x5012,
+  STILL_CAPTURE_MODE: 0x5013,
+  CONTRAST: 0x5014,
+  SHARPNESS: 0x5015,
+  DIGITAL_ZOOM: 0x5016,
+  EFFECT_MODE: 0x5017,
+  BURST_NUMBER: 0x5018,
+  BURST_INTERVAL: 0x5019,
+  TIMELAPSE_NUMBER: 0x501a,
+  TIMELAPSE_INTERVAL: 0x501b,
+  FOCUS_METERING_MODE: 0x501c,
+  UPLOAD_URL: 0x501d,
+  ARTIST: 0x501e,
+  COPYRIGHT_INFO: 0x501f,
+  SYNCHRONIZATION_PARTNER: 0x5020,
+  DEVICE_FRIENDLY_NAME: 0x5021,
+  VOLUME: 0x5022,
+  SUPPORTED_FORMATS: 0x5023,
+  SUPPORTED_FORMAT_CATEGORIES: 0x5024,
+  SUPPORTED_FORMAT_PROPERTIES: 0x5025,
+};
+
+/** Property descriptor form flags. */
+const PROPERTY_FORM = {
+  NONE: 0x00,
+  RANGE: 0x01,
+  ENUMERATION: 0x02,
+  DATE_TIME: 0x03,
+  FIXED_LENGTH_ARRAY: 0x04,
+  REGULAR_EXPRESSION: 0x05,
+  BYTE_ARRAY: 0x06,
+  LONG_STRING: 0x07,
+};
+
+/** Property descriptor get/set values. */
+const PROPERTY_GET_SET = {
+  GET: 0,
+  GET_SET: 1,
+};
+
+/** Object protection status values for SetObjectProtection. */
+const OBJECT_PROTECTION = {
+  NONE: 0,
+  READ_ONLY: 1,
 };
 
 /** Object format codes used by MTP. */
@@ -132,8 +295,26 @@ const MTP_DATATYPE = {
   UINT64: 0x0008,
   INT128: 0x0009,
   UINT128: 0x000a,
+  AINT8: 0x4001,
+  AUINT8: 0x4002,
+  AINT16: 0x4003,
+  AUINT16: 0x4004,
+  AINT32: 0x4005,
+  AUINT32: 0x4006,
+  AINT64: 0x4007,
+  AUINT64: 0x4008,
+  AINT128: 0x4009,
+  AUINT128: 0x400a,
   STRING: 0xffff,
 };
+
+const DATATYPE_ARRAY_MASK = 0x4000;
+
+function isArrayDatatype(datatype) {
+  return (
+    datatype !== MTP_DATATYPE.STRING && (datatype & DATATYPE_ARRAY_MASK) !== 0
+  );
+}
 
 /** Response code to human-readable name (or a hex fallback). */
 function findName(list, value) {
@@ -143,6 +324,51 @@ function findName(list, value) {
     }
   }
   return `Unknown (0x${value.toString(16)})`;
+}
+
+function operationLabel(operation) {
+  return operation == null ? '' : ` for ${findName(CODE, operation)}`;
+}
+
+const LOG_LEVELS = Object.freeze({
+  silent: 0,
+  error: 1,
+  warn: 2,
+  info: 3,
+  debug: 4,
+});
+const DEFAULT_LOG_LEVEL = 'silent';
+
+function normalizeLogLevel(value) {
+  const level = value ?? DEFAULT_LOG_LEVEL;
+  if (!(level in LOG_LEVELS)) {
+    throw new RangeError(
+      `logLevel must be one of ${Object.keys(LOG_LEVELS).join(', ')}.`,
+    );
+  }
+  return level;
+}
+
+function createLogger(custom) {
+  if (custom) {
+    return {
+      debug: custom.debug?.bind(custom),
+      info: custom.info?.bind(custom),
+      warn: custom.warn?.bind(custom),
+      error: custom.error?.bind(custom),
+    };
+  }
+  if (typeof globalThis.console === 'undefined') {
+    return {};
+  }
+
+  const target = globalThis.console;
+  return {
+    debug: target.debug?.bind(target) ?? target.log?.bind(target),
+    info: target.info?.bind(target) ?? target.log?.bind(target),
+    warn: target.warn?.bind(target),
+    error: target.error?.bind(target),
+  };
 }
 
 function toUint8Array(data) {
@@ -224,7 +450,7 @@ function parseContainerPacket(bytes, length) {
   return {
     type: TYPE[typeValue] ?? `Unknown (${typeValue})`,
     typeValue,
-    code: findName(CODE, codeValue),
+    code: findName(typeValue === EVENT_BLOCK ? EVENT : CODE, codeValue),
     codeValue,
     transactionID: bytes.getUint32(8, true),
     length: containerLength,
@@ -261,7 +487,7 @@ function decodeMtpString(input) {
 }
 
 const MAX_STRING_LENGTH = 254;
-const WRITE_CHUNK_SIZE = 64 * 1024;
+const DEFAULT_WRITE_CHUNK_SIZE = 512;
 
 function normalizeBytes(input) {
   if (input instanceof Uint8Array) {
@@ -276,12 +502,55 @@ function normalizeBytes(input) {
   throw new TypeError('Expected an ArrayBuffer or a typed array.');
 }
 
+function isAsyncIterable(value) {
+  return value != null && typeof value[Symbol.asyncIterator] === 'function';
+}
+
+function readUploadSize(size) {
+  if (!Number.isInteger(size) || size < 0) {
+    throw new RangeError('size must be a non-negative integer.');
+  }
+  return size;
+}
+
+function normalizeUploadSource(data, size) {
+  if (isAsyncIterable(data)) {
+    if (size == null) {
+      throw new TypeError('size is required for an AsyncIterable upload.');
+    }
+    return { size: readUploadSize(size), iterable: data };
+  }
+
+  const bytes = normalizeBytes(data);
+  const totalSize = size == null ? bytes.byteLength : readUploadSize(size);
+
+  if (totalSize !== bytes.byteLength) {
+    throw new RangeError('size must equal the data length.');
+  }
+
+  return { size: totalSize, bytes };
+}
+
 function positiveInteger(value, fallback, name) {
   if (value == null) {
     return fallback;
   }
   if (!Number.isInteger(value) || value < 1) {
     throw new RangeError(`${name} must be a positive integer.`);
+  }
+  return value;
+}
+
+function readUint16(value, name) {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffff) {
+    throw new RangeError(`${name} must be an unsigned 16-bit integer.`);
+  }
+  return value;
+}
+
+function readUint32(value, name) {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+    throw new RangeError(`${name} must be an unsigned 32-bit integer.`);
   }
   return value;
 }
@@ -306,6 +575,100 @@ function readMtpStringAt(bytes, offset) {
       : '';
 
   return { text, offset: offset + 1 + declared * 2 };
+}
+
+function readCountedArray(bytes, view, offset, width) {
+  if (offset + 4 > bytes.byteLength) {
+    throw new RangeError('The DeviceInfo dataset is too short.');
+  }
+
+  const count = view.getUint32(offset, true);
+  offset += 4;
+
+  const available = Math.floor((bytes.byteLength - offset) / width);
+  const length = Math.min(count, available);
+  const values = [];
+
+  for (let index = 0; index < length; index += 1) {
+    values.push(
+      width === 4
+        ? view.getUint32(offset + index * 4, true)
+        : view.getUint16(offset + index * 2, true),
+    );
+  }
+
+  return { values, offset: offset + length * width };
+}
+
+/**
+ * Decode a PTP DeviceInfo dataset.
+ * @param {ArrayBuffer|Uint8Array} input
+ * @returns {object}
+ */
+function decodeDeviceInfo(input) {
+  const bytes = normalizeBytes(input);
+  if (bytes.byteLength < 8) {
+    throw new RangeError(
+      `The DeviceInfo dataset is too short: ${bytes.byteLength} bytes`,
+    );
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 0;
+
+  const standardVersion = view.getUint16(offset, true);
+  offset += 2;
+  const vendorExtensionID = view.getUint32(offset, true);
+  offset += 4;
+  const vendorExtensionVersion = view.getUint16(offset, true);
+  offset += 2;
+
+  const description = readMtpStringAt(bytes, offset);
+  offset = description.offset;
+
+  if (offset + 2 > bytes.byteLength) {
+    throw new RangeError('The DeviceInfo dataset is too short.');
+  }
+
+  const functionalMode = view.getUint16(offset, true);
+  offset += 2;
+
+  const operations = readCountedArray(bytes, view, offset, 4);
+  offset = operations.offset;
+  const events = readCountedArray(bytes, view, offset, 4);
+  offset = events.offset;
+  const properties = readCountedArray(bytes, view, offset, 4);
+  offset = properties.offset;
+  const captureFormats = readCountedArray(bytes, view, offset, 2);
+  offset = captureFormats.offset;
+  const imageFormats = readCountedArray(bytes, view, offset, 2);
+
+  offset = imageFormats.offset;
+
+  const manufacturer = readMtpStringAt(bytes, offset);
+  offset = manufacturer.offset;
+  const model = readMtpStringAt(bytes, offset);
+  offset = model.offset;
+  const deviceVersion = readMtpStringAt(bytes, offset);
+  offset = deviceVersion.offset;
+  const serialNumber = readMtpStringAt(bytes, offset);
+
+  return {
+    StandardVersion: standardVersion,
+    VendorExtensionID: vendorExtensionID,
+    VendorExtensionVersion: vendorExtensionVersion,
+    VendorExtensionDescription: description.text,
+    FunctionalMode: functionalMode,
+    OperationsSupported: operations.values,
+    EventsSupported: events.values,
+    DevicePropertiesSupported: properties.values,
+    CaptureFormats: captureFormats.values,
+    ImageFormats: imageFormats.values,
+    Manufacturer: manufacturer.text,
+    Model: model.text,
+    DeviceVersion: deviceVersion.text,
+    SerialNumber: serialNumber.text,
+  };
 }
 
 /**
@@ -374,8 +737,35 @@ function encodeObjectInfo(info = {}) {
   const dateCreated = encodeMtpString(info.dateCreated ?? '');
   const dateModified = encodeMtpString(info.dateModified ?? '');
   const keywords = encodeMtpString(info.keywords ?? '');
+  const storageId = readUint32(info.storageId ?? 0, 'storageId');
+  const format = readUint16(info.format ?? OBJECT_FORMAT.UNDEFINED, 'format');
+  const protectionStatus = readUint16(
+    info.protectionStatus ?? 0,
+    'protectionStatus',
+  );
+  const parent = readUint32(info.parent ?? 0, 'parent');
+  const associationType = readUint16(
+    info.associationType ?? 0,
+    'associationType',
+  );
+  const associationDescription = readUint32(
+    info.associationDescription ?? 0,
+    'associationDescription',
+  );
+  const sequenceNumber = readUint32(info.sequenceNumber ?? 0, 'sequenceNumber');
 
   const fixed = 52;
+  const objectSize = info.size ?? 0;
+  if (
+    !Number.isInteger(objectSize) ||
+    objectSize < 0 ||
+    objectSize > 0xffffffff
+  ) {
+    throw new RangeError(
+      'ObjectInfo size must fit in an unsigned 32-bit value.',
+    );
+  }
+
   const out = new Uint8Array(
     fixed +
       filename.byteLength +
@@ -386,25 +776,25 @@ function encodeObjectInfo(info = {}) {
   const view = new DataView(out.buffer);
 
   let offset = 0;
-  view.setUint32(offset, info.storageId ?? 0, true);
+  view.setUint32(offset, storageId, true);
   offset += 4;
-  view.setUint16(offset, info.format ?? OBJECT_FORMAT.UNDEFINED, true);
+  view.setUint16(offset, format, true);
   offset += 2;
-  view.setUint16(offset, info.protectionStatus ?? 0, true);
+  view.setUint16(offset, protectionStatus, true);
   offset += 2;
-  view.setUint32(offset, info.size ?? 0, true);
+  view.setUint32(offset, objectSize, true);
   offset += 4;
   // Thumbnail format, size, width and height (14 bytes).
   offset += 14;
   // Image width, height and bit depth (12 bytes).
   offset += 12;
-  view.setUint32(offset, info.parent ?? 0, true);
+  view.setUint32(offset, parent, true);
   offset += 4;
-  view.setUint16(offset, info.associationType ?? 0, true);
+  view.setUint16(offset, associationType, true);
   offset += 2;
-  view.setUint32(offset, info.associationDescription ?? 0, true);
+  view.setUint32(offset, associationDescription, true);
   offset += 4;
-  view.setUint32(offset, info.sequenceNumber ?? 0, true);
+  view.setUint32(offset, sequenceNumber, true);
   offset += 4;
 
   out.set(filename, offset);
@@ -470,7 +860,38 @@ function propertyName(code) {
   return null;
 }
 
+function concatUint8Arrays(parts) {
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+
+  return out;
+}
+
 function encodePropertyValue(datatype, value) {
+  if (isArrayDatatype(datatype)) {
+    if (!Array.isArray(value) && !ArrayBuffer.isView(value)) {
+      throw new TypeError('Array property values must be an array.');
+    }
+
+    const baseType = datatype & ~DATATYPE_ARRAY_MASK;
+    const values = Array.isArray(value)
+      ? value
+      : Array.from(/** @type {any} */ (value));
+    const count = new Uint8Array(4);
+    new DataView(count.buffer).setUint32(0, values.length, true);
+
+    return concatUint8Arrays([
+      count,
+      ...values.map(item => encodePropertyValue(baseType, item)),
+    ]);
+  }
+
   const out = new Uint8Array(16);
   const view = new DataView(out.buffer);
 
@@ -531,6 +952,34 @@ function encodePropertyValue(datatype, value) {
 }
 
 function decodePropertyValue(bytes, view, offset, datatype) {
+  if (isArrayDatatype(datatype)) {
+    if (offset + 4 > bytes.byteLength) {
+      throw new RangeError('An array property value is missing its count.');
+    }
+
+    const count = view.getUint32(offset, true);
+    offset += 4;
+    const baseType = datatype & ~DATATYPE_ARRAY_MASK;
+
+    if (baseType === MTP_DATATYPE.NONE) {
+      throw new RangeError('An array property value needs a scalar data type.');
+    }
+    if (count > bytes.byteLength) {
+      throw new RangeError(
+        `Array property count ${count} exceeds the ${bytes.byteLength}-byte payload.`,
+      );
+    }
+
+    const values = [];
+    for (let index = 0; index < count; index += 1) {
+      const decoded = decodePropertyValue(bytes, view, offset, baseType);
+      values.push(decoded.value);
+      offset = decoded.offset;
+    }
+
+    return { value: values, offset };
+  }
+
   switch (datatype) {
     case MTP_DATATYPE.NONE:
       return { value: null, offset };
@@ -552,6 +1001,9 @@ function decodePropertyValue(bytes, view, offset, datatype) {
       return { value: view.getBigUint64(offset, true), offset: offset + 8 };
     case MTP_DATATYPE.INT128:
     case MTP_DATATYPE.UINT128:
+      if (offset + 16 > bytes.byteLength) {
+        throw new RangeError('The 128-bit property value is truncated.');
+      }
       return {
         value: bytes.slice(offset, offset + 16),
         offset: offset + 16,
@@ -568,17 +1020,310 @@ function decodePropertyValue(bytes, view, offset, datatype) {
 }
 
 /**
+ * @typedef {object} PropertyDescriptor
+ * @property {number} dataType
+ * @property {number} getSet
+ * @property {any} defaultValue
+ * @property {number} formFlag
+ * @property {object|null} form
+ */
+
+/**
+ * @typedef {PropertyDescriptor & {
+ *   devicePropertyCode: number,
+ *   currentValue: any
+ * }} DevicePropDesc
+ */
+
+/**
+ * @typedef {PropertyDescriptor & {
+ *   objectPropertyCode: number,
+ *   groupCode: number
+ * }} ObjectPropDesc
+ */
+
+/**
+ * Decode a single property value payload. Trailing bytes are ignored because
+ * some devices pad the dataset.
+ * @param {ArrayBuffer|Uint8Array} input
+ * @param {number} datatype
+ * @returns {any}
+ */
+function decodePropertyValueData(input, datatype) {
+  const bytes = normalizeBytes(input);
+
+  if (bytes.byteLength === 0) {
+    if (datatype === MTP_DATATYPE.NONE) {
+      return null;
+    }
+    if (datatype === MTP_DATATYPE.STRING) {
+      return '';
+    }
+    throw new RangeError('The property value is empty.');
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return decodePropertyValue(bytes, view, 0, datatype).value;
+}
+
+function readPropertyForm(bytes, view, offset, datatype, formFlag) {
+  switch (formFlag) {
+    case PROPERTY_FORM.NONE:
+      return { form: null, offset };
+
+    case PROPERTY_FORM.RANGE: {
+      const min = decodePropertyValue(bytes, view, offset, datatype);
+      const max = decodePropertyValue(bytes, view, min.offset, datatype);
+      const step = decodePropertyValue(bytes, view, max.offset, datatype);
+
+      return {
+        form: {
+          type: 'range',
+          min: min.value,
+          max: max.value,
+          step: step.value,
+        },
+        offset: step.offset,
+      };
+    }
+
+    case PROPERTY_FORM.ENUMERATION: {
+      if (offset + 2 > bytes.byteLength) {
+        throw new RangeError('The property form is missing its value count.');
+      }
+
+      const count = view.getUint16(offset, true);
+      offset += 2;
+
+      if (count > bytes.byteLength) {
+        throw new RangeError(
+          `Property form count ${count} exceeds the ${bytes.byteLength}-byte payload.`,
+        );
+      }
+
+      const values = [];
+      for (let index = 0; index < count; index += 1) {
+        const decoded = decodePropertyValue(bytes, view, offset, datatype);
+        values.push(decoded.value);
+        offset = decoded.offset;
+      }
+
+      return { form: { type: 'enumeration', values }, offset };
+    }
+
+    case PROPERTY_FORM.DATE_TIME:
+    case PROPERTY_FORM.REGULAR_EXPRESSION: {
+      if (offset >= bytes.byteLength) {
+        throw new RangeError('The property form is missing its string value.');
+      }
+
+      const { text, offset: nextOffset } = readMtpStringAt(bytes, offset);
+      return {
+        form: {
+          type:
+            formFlag === PROPERTY_FORM.DATE_TIME
+              ? 'dateTime'
+              : 'regularExpression',
+          value: text,
+        },
+        offset: nextOffset,
+      };
+    }
+
+    case PROPERTY_FORM.FIXED_LENGTH_ARRAY:
+    case PROPERTY_FORM.BYTE_ARRAY: {
+      if (offset + 2 > bytes.byteLength) {
+        throw new RangeError('The property form is missing its value count.');
+      }
+
+      const count = view.getUint16(offset, true);
+      return {
+        form: {
+          type:
+            formFlag === PROPERTY_FORM.FIXED_LENGTH_ARRAY
+              ? 'fixedLengthArray'
+              : 'byteArray',
+          count,
+        },
+        offset: offset + 2,
+      };
+    }
+
+    case PROPERTY_FORM.LONG_STRING:
+      return { form: { type: 'longString' }, offset };
+
+    default:
+      return { form: null, offset };
+  }
+}
+
+/**
+ * Decode a DevicePropDesc dataset.
+ * @param {ArrayBuffer|Uint8Array} input
+ * @returns {DevicePropDesc}
+ */
+function decodeDevicePropDesc(input) {
+  const bytes = normalizeBytes(input);
+  if (bytes.byteLength < 5) {
+    throw new RangeError(
+      `DevicePropDesc is too short: ${bytes.byteLength} bytes`,
+    );
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 0;
+
+  const devicePropertyCode = view.getUint16(offset, true);
+  offset += 2;
+  const dataType = view.getUint16(offset, true);
+  offset += 2;
+  const getSet = view.getUint8(offset);
+  offset += 1;
+
+  const defaultValue = decodePropertyValue(bytes, view, offset, dataType);
+  offset = defaultValue.offset;
+
+  if (dataType === MTP_DATATYPE.STRING && offset >= bytes.byteLength) {
+    return {
+      devicePropertyCode,
+      dataType,
+      getSet,
+      defaultValue: defaultValue.value,
+      currentValue: null,
+      formFlag: PROPERTY_FORM.NONE,
+      form: null,
+    };
+  }
+
+  const currentValue = decodePropertyValue(bytes, view, offset, dataType);
+  offset = currentValue.offset;
+
+  let formFlag = PROPERTY_FORM.NONE;
+  if (offset < bytes.byteLength) {
+    formFlag = view.getUint8(offset);
+    offset += 1;
+  }
+
+  const { form } = readPropertyForm(bytes, view, offset, dataType, formFlag);
+
+  return {
+    devicePropertyCode,
+    dataType,
+    getSet,
+    defaultValue: defaultValue.value,
+    currentValue: currentValue.value,
+    formFlag,
+    form,
+  };
+}
+
+/**
+ * Decode an ObjectPropDesc dataset.
+ * @param {ArrayBuffer|Uint8Array} input
+ * @returns {ObjectPropDesc}
+ */
+function decodeObjectPropDesc(input) {
+  const bytes = normalizeBytes(input);
+  if (bytes.byteLength < 5) {
+    throw new RangeError(
+      `ObjectPropDesc is too short: ${bytes.byteLength} bytes`,
+    );
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 0;
+
+  const objectPropertyCode = view.getUint16(offset, true);
+  offset += 2;
+  const dataType = view.getUint16(offset, true);
+  offset += 2;
+  const getSet = view.getUint8(offset);
+  offset += 1;
+
+  const defaultValue = decodePropertyValue(bytes, view, offset, dataType);
+  offset = defaultValue.offset;
+
+  if (offset + 4 > bytes.byteLength) {
+    throw new RangeError('ObjectPropDesc is missing its group code.');
+  }
+
+  const groupCode = view.getUint32(offset, true);
+  offset += 4;
+
+  let formFlag = PROPERTY_FORM.NONE;
+  if (offset < bytes.byteLength) {
+    formFlag = view.getUint8(offset);
+    offset += 1;
+  }
+
+  const { form } = readPropertyForm(bytes, view, offset, dataType, formFlag);
+
+  return {
+    objectPropertyCode,
+    dataType,
+    getSet,
+    defaultValue: defaultValue.value,
+    groupCode,
+    formFlag,
+    form,
+  };
+}
+
+/** Decode a data payload that holds a uint32 count and that many uint16s. */
+function decodeUint16List(input) {
+  const bytes = normalizeBytes(input);
+  if (bytes.byteLength < 4) {
+    return [];
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = view.getUint32(0, true);
+  const available = Math.floor((bytes.byteLength - 4) / 2);
+  const out = [];
+
+  for (let i = 0; i < Math.min(count, available); i += 1) {
+    out.push(view.getUint16(4 + i * 2, true));
+  }
+
+  return out;
+}
+
+/** Encode a uint32 count followed by that many uint32s. */
+function encodeUint32List(values) {
+  if (!Array.isArray(values)) {
+    throw new TypeError('values must be an array of unsigned 32-bit integers.');
+  }
+
+  const out = new Uint8Array(4 + values.length * 4);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, values.length, true);
+
+  values.forEach((value, index) => {
+    view.setUint32(4 + index * 4, readUint32(value, `values[${index}]`), true);
+  });
+
+  return out;
+}
+
+/**
  * Encode a property list for SendObjectPropList.
  * @param {Array<{handle?: number, property: number, datatype: number, value: any}>} entries
  * @returns {Uint8Array}
  */
 function encodeObjectPropList(entries) {
+  if (!Array.isArray(entries)) {
+    throw new TypeError('entries must be an array.');
+  }
+
   const parts = entries.map(entry => {
-    const datatype = entry.datatype ?? MTP_DATATYPE.UINT32;
+    const datatype = readUint16(
+      entry.datatype ?? MTP_DATATYPE.UINT32,
+      'datatype',
+    );
     const head = new Uint8Array(8);
     const view = new DataView(head.buffer);
-    view.setUint32(0, entry.handle ?? 0, true);
-    view.setUint16(4, entry.property, true);
+    view.setUint32(0, readUint32(entry.handle ?? 0, 'handle'), true);
+    view.setUint16(4, readUint16(entry.property, 'property'), true);
     view.setUint16(6, datatype, true);
     return [head, encodePropertyValue(datatype, entry.value)];
   });
@@ -665,16 +1410,95 @@ function decodeUint32List(input) {
   return out;
 }
 
+/**
+ * @typedef {object} MtpResponse
+ * @property {string} code
+ * @property {number} codeValue
+ * @property {number} transactionID
+ * @property {number[]} [parameters]
+ */
+
 /** Error thrown when the device answers with a non-OK response code. */
 class MtpResponseError extends Error {
-  constructor(response) {
-    super(`MTP command failed: ${response.code}`);
+  /**
+   * @param {MtpResponse} response Parsed response container.
+   * @param {number} [operation] Operation code that caused the response.
+   */
+  constructor(response, operation) {
+    const operationName = operation == null ? null : findName(CODE, operation);
+    const codeValue = Number(response.codeValue ?? 0);
+    const codeSuffix = Number.isFinite(codeValue)
+      ? ` (0x${codeValue.toString(16).padStart(4, '0')})`
+      : '';
+    const prefix = operationName
+      ? `MTP command ${operationName} failed`
+      : 'MTP command failed';
+
+    super(`${prefix}: ${response.code ?? 'Unknown response'}${codeSuffix}`);
     this.name = 'MtpResponseError';
     this.code = response.code;
     this.codeValue = response.codeValue;
     this.transactionID = response.transactionID;
+    this.operation = operationName;
   }
 }
+
+function isPartialOrderError(error) {
+  return (
+    error instanceof MtpResponseError &&
+    (error.codeValue === CODE.PARAMETER_NOT_SUPPORTED.value ||
+      error.codeValue === CODE.INVALID_PARAMETER.value)
+  );
+}
+
+function isGeneralError(error) {
+  return (
+    error instanceof MtpResponseError &&
+    error.codeValue === CODE.GENERAL_ERROR.value
+  );
+}
+
+const MAX_FILENAME_LENGTH = 255;
+const MAX_UPLOAD_NAME_ATTEMPTS = 10;
+
+function splitFilename(filename) {
+  const dot = filename.lastIndexOf('.');
+  if (dot <= 0 || dot === filename.length - 1) {
+    return { base: filename, extension: '' };
+  }
+  return {
+    base: filename.slice(0, dot),
+    extension: filename.slice(dot),
+  };
+}
+
+function numberedFilename(filename, number) {
+  const { base, extension } = splitFilename(filename);
+  const suffix = ` (${number})`;
+  const baseLength = Math.max(
+    0,
+    MAX_FILENAME_LENGTH - extension.length - suffix.length,
+  );
+  return `${base.slice(0, baseLength)}${suffix}${extension}`;
+}
+
+function createAbortError() {
+  if (typeof DOMException === 'function') {
+    return new DOMException('The upload was aborted.', 'AbortError');
+  }
+
+  const error = new Error('The upload was aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
+/**
+ * @typedef {object} MtpLogger
+ * @property {(message: string, context?: object) => void} [debug]
+ * @property {(message: string, context?: object) => void} [info]
+ * @property {(message: string, context?: object) => void} [warn]
+ * @property {(message: string, context?: object) => void} [error]
+ */
 
 /**
  * @typedef {object} MtpOptions
@@ -682,9 +1506,29 @@ class MtpResponseError extends Error {
  * @property {number} [readTimeoutMs] Idle read timeout.
  * @property {number} [transferDeadlineMs] Total read deadline.
  * @property {number} [maxEventBlocks] Consecutive event blocks allowed.
+ * @property {'silent'|'error'|'warn'|'info'|'debug'} [logLevel] Log threshold.
+ *   Default `silent`.
+ * @property {MtpLogger} [logger] Custom log sink.
+ * @property {number} [writeChunkSize] USB OUT payload chunk size. Default 512.
+ * @property {boolean} [sendZeroLengthPacket] End aligned data phases with a ZLP.
+ */
+
+/**
+ * @typedef {object} UploadStreamOptions
+ * @property {AbortSignal} [signal]
+ * @property {(sent: number) => void} [onProgress]
  */
 
 class Mtp extends EventTarget {
+  /**
+   * Returns true when this browser can use WebUSB for MTP.
+   * @param {NavigatorLike} [navigatorLike]
+   * @returns {boolean}
+   */
+  static isSupported(navigatorLike = globalThis.navigator) {
+    return isSupported(navigatorLike);
+  }
+
   /**
    * @param {number} vendorId
    * @param {number} productId
@@ -717,6 +1561,17 @@ class Mtp extends EventTarget {
       DEFAULT_MAX_EVENT_BLOCKS,
       'maxEventBlocks',
     );
+    this.logLevel = normalizeLogLevel(settings.logLevel);
+    this.logger = createLogger(settings.logger);
+    this.writeChunkSize = positiveInteger(
+      settings.writeChunkSize,
+      DEFAULT_WRITE_CHUNK_SIZE,
+      'writeChunkSize',
+    );
+    if (this.writeChunkSize < 13) {
+      throw new RangeError('writeChunkSize must be at least 13 bytes.');
+    }
+    this.sendZeroLengthPacket = Boolean(settings.sendZeroLengthPacket);
     this.state = 'initializing';
     this.transactionID = 0;
     this.device = device ?? null;
@@ -729,7 +1584,11 @@ class Mtp extends EventTarget {
     this._operationQueue = Promise.resolve();
     this._closing = false;
     this._closePromise = null;
-    this._transportHealthy = true;
+    this._recovering = false;
+    this._recoveryPromise = null;
+    this.transportHealthy = true;
+    this.partialOrder = null;
+    this.partialState = 'unknown';
 
     // Incoming bytes are buffered here because a single USB transfer can
     // contain more than one MTP container (or half of one).
@@ -743,21 +1602,16 @@ class Mtp extends EventTarget {
   }
 
   async _initialize(vendorId, productId) {
-    // Only touch the WebUSB shim when a device still has to be discovered;
-    // callers that pass a USBDevice should not need the native `usb` module.
+    // The Node.js entry sets the `usb` shim through setUsbTransport(). The
+    // browser entry reads WebUSB from the global scope.
     if (this.device == null) {
-      if (!isBrowser) {
-        // For Node.js and Electron
-        ({ webusb: usb } = await import('usb'));
-      } else {
-        usb = navigator.usb; // Yay, we're using WebUSB!
-      }
+      const transport = usbTransport ?? globalThis.navigator?.usb;
 
-      if (!usb) {
+      if (!transport) {
         throw new Error('WebUSB is not available in this environment.');
       }
 
-      const devices = await usb.getDevices();
+      const devices = await transport.getDevices();
       this.device =
         devices.find(
           candidate =>
@@ -775,13 +1629,23 @@ class Mtp extends EventTarget {
         if (productId != null) {
           filter.productId = productId;
         }
-        this.device = await usb.requestDevice({ filters: [filter] });
+        this.device = await transport.requestDevice({ filters: [filter] });
       }
     }
 
     if (this.device == null) {
       throw new Error('No device available.');
     }
+
+    await this._openDevice();
+
+    this.state = 'open';
+    this.dispatchEvent(new Event('ready'));
+    return this;
+  }
+
+  async _openDevice() {
+    this.usbconfig = null;
 
     // Chromium can report a device as opened while its interface is still
     // claimed by the previous page. Closing first makes reopening reliable.
@@ -843,10 +1707,91 @@ class Mtp extends EventTarget {
     } catch {
       // Some WebUSB implementations expose non-extensible device objects.
     }
+  }
 
-    this.state = 'open';
-    this.dispatchEvent(new Event('ready'));
-    return this;
+  /**
+   * Reopen the USB transport and start a new MTP session after a transport
+   * failure. The same USBDevice must still be connected.
+   * @returns {Promise<this>}
+   */
+  async recover() {
+    if (this._recovering) {
+      throw new Error('The MTP connection is already recovering.');
+    }
+    if (this._closing || this.state === 'closed') {
+      throw new Error('The MTP instance is closed. Create a new Mtp instance.');
+    }
+    if (!this.device) {
+      throw new Error('The MTP device is not available. Connect it again.');
+    }
+
+    this._recovering = true;
+    const recovery = this._recoverTransport();
+    this._recoveryPromise = recovery;
+
+    try {
+      return await recovery;
+    } finally {
+      this._recovering = false;
+      this._recoveryPromise = null;
+    }
+  }
+
+  async _recoverTransport() {
+    await this._operationQueue.catch(() => {});
+
+    if (this._closing) {
+      throw new Error('The MTP instance is closing.');
+    }
+
+    this.transportHealthy = false;
+    this.sessionOpen = false;
+    this._resetReader();
+    this.transactionID = 0;
+    this.partialOrder = null;
+    this.partialState = 'unknown';
+    this.lastError = null;
+
+    try {
+      await this._openDevice();
+      this.transportHealthy = true;
+      this.state = 'open';
+      await this._openSessionDirect();
+      return this;
+    } catch (error) {
+      this.transportHealthy = false;
+      throw new Error(
+        `Could not recover the MTP connection: ${error.message}`,
+        { cause: error },
+      );
+    }
+  }
+
+  /**
+   * Reset the USB device directly. Use this after a stalled bulk transfer when
+   * the device no longer accepts data. It ends the MTP session.
+   */
+  async resetUsbDevice() {
+    if (!this.device || typeof this.device.reset !== 'function') {
+      throw new Error('USB reset is not available for this device.');
+    }
+
+    this._log('warn', 'resetting USB device');
+    try {
+      await withTimeout(
+        this.device.reset(),
+        SETUP_TIMEOUT_MS,
+        'Timed out while resetting the USB device.',
+      );
+    } catch (error) {
+      this._log('error', 'USB device reset failed', { error });
+      throw error;
+    }
+
+    this.sessionOpen = false;
+    this.transportHealthy = false;
+    this._resetReader();
+    this._log('info', 'USB device reset complete');
   }
 
   async _selectConfiguration() {
@@ -1045,6 +1990,29 @@ class Mtp extends EventTarget {
     return findName(list, idx);
   }
 
+  /** True until a USB or protocol failure desynchronizes the transport. */
+  isTransportHealthy() {
+    return this.transportHealthy;
+  }
+
+  _log(level, message, context) {
+    if (LOG_LEVELS[level] > LOG_LEVELS[this.logLevel]) {
+      return;
+    }
+    const write = this.logger[level];
+    if (write) {
+      write(`[mtp-web] ${message}`, context);
+    }
+  }
+
+  setLogLevel(level) {
+    this.logLevel = normalizeLogLevel(level);
+  }
+
+  getLogLevel() {
+    return this.logLevel;
+  }
+
   /**
    * Build a container and advance the transaction ID.
    * @param {{type: number, code: number, payload?: number[]}} container
@@ -1104,7 +2072,12 @@ class Mtp extends EventTarget {
 
     while (this._rxLength < count) {
       if (Date.now() >= deadline) {
-        this._transportHealthy = false;
+        this.transportHealthy = false;
+        this._log('error', 'usb read deadline exceeded', {
+          endpoint: this.usbconfig.inEPnum,
+          wanted: count,
+          buffered: this._rxLength,
+        });
         throw new Error('MTP transfer deadline exceeded.');
       }
 
@@ -1121,20 +2094,33 @@ class Mtp extends EventTarget {
           'Timed out waiting for data from the MTP device.',
         );
       } catch (error) {
-        this._transportHealthy = false;
+        this.transportHealthy = false;
+        this._log('error', 'usb read failed', {
+          endpoint: this.usbconfig.inEPnum,
+          wanted: count,
+          error,
+        });
+        await this._clearHalt('in', this.usbconfig.inEPnum, error);
         throw error;
       }
 
       if (result?.status && result.status !== 'ok') {
+        this.transportHealthy = false;
+        this._log('error', 'usb read status', {
+          endpoint: this.usbconfig.inEPnum,
+          status: result.status,
+        });
         if (result.status === 'stall') {
-          await this.device
-            .clearHalt('in', this.usbconfig.inEPnum)
-            .catch(() => {});
+          await this._clearHalt('in', this.usbconfig.inEPnum);
         }
         throw new Error(`USB transfer failed with status "${result.status}".`);
       }
 
       if (result?.data && result.data.byteLength > 0) {
+        this._log('debug', 'usb read', {
+          endpoint: this.usbconfig.inEPnum,
+          bytes: result.data.byteLength,
+        });
         this._append(toUint8Array(result.data));
         idleRounds = 0;
         continue;
@@ -1144,7 +2130,7 @@ class Mtp extends EventTarget {
       // but a device that never answers should not hang the caller forever.
       idleRounds += 1;
       if (idleRounds * 10 >= this.readTimeoutMs) {
-        this._transportHealthy = false;
+        this.transportHealthy = false;
         throw new Error('Timed out waiting for data from the MTP device.');
       }
       await delay(10);
@@ -1163,11 +2149,11 @@ class Mtp extends EventTarget {
     const containerLength = header.getUint32(0, true);
 
     if (containerLength < 12) {
-      this._transportHealthy = false;
+      this.transportHealthy = false;
       throw new Error(`Invalid MTP container length: ${containerLength}`);
     }
     if (containerLength > this.maxContainerLength) {
-      this._transportHealthy = false;
+      this.transportHealthy = false;
       throw new RangeError(
         `MTP container length ${containerLength} exceeds the limit of ` +
           `${this.maxContainerLength} bytes.`,
@@ -1177,15 +2163,21 @@ class Mtp extends EventTarget {
     await this._readExactly(containerLength, deadline);
 
     const bytes = this._take(containerLength);
-    return parseContainerPacket(
-      new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-      containerLength,
-    );
+    try {
+      return parseContainerPacket(
+        new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+        containerLength,
+      );
+    } catch (error) {
+      this.transportHealthy = false;
+      throw error;
+    }
   }
 
   _countEventBlock(count) {
     const next = count + 1;
     if (next > this.maxEventBlocks) {
+      this.transportHealthy = false;
       throw new Error(
         `Too many event blocks from the MTP device ` +
           `(limit ${this.maxEventBlocks}).`,
@@ -1199,7 +2191,7 @@ class Mtp extends EventTarget {
    * are ignored; an error response is turned into an exception instead of
    * being silently skipped (which used to leave the stream out of sync).
    */
-  async readData(deadline = Date.now() + this.transferDeadlineMs) {
+  async readData(deadline = Date.now() + this.transferDeadlineMs, operation) {
     let eventBlocks = 0;
 
     for (;;) {
@@ -1214,18 +2206,27 @@ class Mtp extends EventTarget {
       }
       if (container.typeValue === RESPONSE_BLOCK) {
         if (container.codeValue !== CODE.OK.value) {
-          throw new MtpResponseError(container);
+          throw new MtpResponseError(container, operation);
         }
-        throw new Error('Received a response before the expected data block.');
+        this.transportHealthy = false;
+        throw new Error(
+          `Received a response before the expected data block${operationLabel(
+            operation,
+          )}.`,
+        );
       }
 
-      throw new Error(`Unexpected MTP container: ${container.type}`);
+      this.transportHealthy = false;
+      throw new Error(
+        `Unexpected MTP container${operationLabel(operation)}: ${container.type}`,
+      );
     }
   }
 
   async _readResponse(
     transactionID,
     deadline = Date.now() + this.transferDeadlineMs,
+    operation,
   ) {
     let eventBlocks = 0;
 
@@ -1237,31 +2238,56 @@ class Mtp extends EventTarget {
         continue;
       }
       if (container.typeValue !== RESPONSE_BLOCK) {
+        this.transportHealthy = false;
         throw new Error(
-          `Expected a response block, received ${container.type}.`,
+          `Expected a response block, received ${container.type}` +
+            `${operationLabel(operation)}.`,
         );
       }
       if (container.transactionID !== transactionID) {
-        this._transportHealthy = false;
+        this.transportHealthy = false;
         throw new Error(
           `Unexpected transaction ID ${container.transactionID} ` +
-            `(expected ${transactionID}).`,
+            `(expected ${transactionID})${operationLabel(operation)}.`,
         );
       }
       return container;
     }
   }
 
+  /**
+   * Read one MTP event container. The device sends events at any time. A
+   * timeout desynchronizes the transport because WebUSB cannot cancel a pending
+   * transfer, so use this only when the device is expected to send an event.
+   * @param {number} [timeoutMs]
+   */
+  async readEvent(timeoutMs = this.transferDeadlineMs) {
+    const timeout = positiveInteger(
+      timeoutMs,
+      this.transferDeadlineMs,
+      'timeoutMs',
+    );
+
+    return this._enqueue(async () => {
+      const container = await this.read(Date.now() + timeout);
+      if (container.typeValue !== EVENT_BLOCK) {
+        this.transportHealthy = false;
+        throw new Error(`Expected an MTP event, received ${container.type}.`);
+      }
+      return container;
+    });
+  }
+
   _enqueue(operation) {
     if (this._closing) {
       return Promise.reject(new Error('The MTP device is closing.'));
     }
-    if (!this._transportHealthy) {
+    if (!this.transportHealthy) {
       return Promise.reject(new Error(TRANSPORT_OUT_OF_SYNC));
     }
 
     const run = this._operationQueue.then(() => {
-      if (!this._transportHealthy) {
+      if (!this.transportHealthy) {
         throw new Error(TRANSPORT_OUT_OF_SYNC);
       }
       return operation();
@@ -1286,7 +2312,13 @@ class Mtp extends EventTarget {
     { expectData = false, sendData = null, acceptCodes = [] } = {},
   ) {
     const transactionID = this.transactionID;
-    const deadline = Date.now() + this.transferDeadlineMs;
+    this._log('debug', 'command', {
+      code: findName(CODE, container.code),
+      transactionID,
+      parameters: container.payload ?? [],
+      expectsData: expectData,
+      sendDataBytes: sendData == null ? 0 : normalizeBytes(sendData).byteLength,
+    });
 
     await this.write(this.buildContainerPacket(container));
 
@@ -1298,11 +2330,14 @@ class Mtp extends EventTarget {
       );
     }
 
+    // Start the response deadline after the request and its data have gone out.
+    // A large property list must not consume the time reserved for the reply.
+    const deadline = Date.now() + this.transferDeadlineMs;
     let data = null;
     if (expectData) {
-      data = await this.readData(deadline);
+      data = await this.readData(deadline, container.code);
       if (data.transactionID !== transactionID) {
-        this._transportHealthy = false;
+        this.transportHealthy = false;
         throw new Error(
           `Unexpected data-block transaction ID ${data.transactionID} ` +
             `(expected ${transactionID}).`,
@@ -1310,16 +2345,56 @@ class Mtp extends EventTarget {
       }
     }
 
-    const response = await this._readResponse(transactionID, deadline);
+    const response = await this._readResponse(
+      transactionID,
+      deadline,
+      container.code,
+    );
+    this._log('debug', 'response', {
+      code: response.code,
+      codeValue: response.codeValue,
+      transactionID: response.transactionID,
+    });
     const accepted =
       response.codeValue === CODE.OK.value ||
       acceptCodes.includes(response.codeValue);
 
     if (!accepted) {
-      throw new MtpResponseError(response);
+      this._log('error', 'command failed', {
+        code: findName(CODE, container.code),
+        response: response.code,
+        responseCode: response.codeValue,
+      });
+      throw new MtpResponseError(response, container.code);
     }
 
     return { data, response };
+  }
+
+  _command(code, payload = []) {
+    return { type: COMMAND_BLOCK, code: code.value, payload };
+  }
+
+  async _executeForData(code, payload = []) {
+    const { data } = await this._execute(this._command(code, payload), {
+      expectData: true,
+    });
+    return data.payload;
+  }
+
+  async _executeForDataDirect(code, payload = []) {
+    const { data } = await this._executeDirect(this._command(code, payload), {
+      expectData: true,
+    });
+    return data.payload;
+  }
+
+  async _executeForResponse(code, payload = [], options = {}) {
+    const { response } = await this._execute(
+      this._command(code, payload),
+      options,
+    );
+    return response;
   }
 
   async write(buffer) {
@@ -1329,6 +2404,10 @@ class Mtp extends EventTarget {
 
     const bytes = normalizeBytes(buffer);
     let offset = 0;
+    this._log('debug', 'usb write', {
+      endpoint: this.usbconfig.outEPnum,
+      bytes: bytes.byteLength,
+    });
 
     while (offset < bytes.byteLength) {
       const remaining = bytes.byteLength - offset;
@@ -1346,18 +2425,31 @@ class Mtp extends EventTarget {
           'Timed out waiting for the MTP device to accept data.',
         );
       } catch (error) {
-        this._transportHealthy = false;
+        this.transportHealthy = false;
+        this._log('error', 'usb write failed', {
+          endpoint: this.usbconfig.outEPnum,
+          bytes: remaining,
+          error,
+        });
+        await this._clearHalt('out', this.usbconfig.outEPnum, error);
         throw error;
       }
 
       if (result?.status && result.status !== 'ok') {
-        this._transportHealthy = false;
+        this.transportHealthy = false;
+        this._log('error', 'usb write status', {
+          endpoint: this.usbconfig.outEPnum,
+          status: result.status,
+        });
+        if (result.status === 'stall') {
+          await this._clearHalt('out', this.usbconfig.outEPnum);
+        }
         throw new Error(`USB transfer failed with status "${result.status}".`);
       }
 
       const written = result?.bytesWritten ?? remaining;
       if (!(written > 0)) {
-        this._transportHealthy = false;
+        this.transportHealthy = false;
         throw new Error('USB write stalled before the buffer was complete.');
       }
 
@@ -1367,43 +2459,220 @@ class Mtp extends EventTarget {
     return { status: 'ok', bytesWritten: bytes.byteLength };
   }
 
-  /**
-   * Write a buffer in chunks. Bulk endpoints limit the size of one transfer,
-   * so a large object must not go out in one call.
-   */
-  async _writeChunks(bytes) {
-    if (!this.usbconfig) {
-      throw new Error('The MTP device is not ready.');
-    }
-
-    for (
-      let offset = 0;
-      offset < bytes.byteLength;
-      offset += WRITE_CHUNK_SIZE
-    ) {
-      const end = Math.min(offset + WRITE_CHUNK_SIZE, bytes.byteLength);
-      await this.write(bytes.subarray(offset, end));
-    }
-  }
-
-  /**
-   * Write the header and payload of a data container. The header length field
-   * covers both, which is how the device knows when the payload ends.
-   */
-  async _writeDataContainer(code, transactionID, bytes) {
-    const header = new ArrayBuffer(12);
+  _dataContainerHeader(code, transactionID, payloadLength) {
+    const header = new Uint8Array(12);
     writeContainerHeader(
-      new DataView(header),
-      12 + bytes.byteLength,
+      new DataView(header.buffer),
+      12 + payloadLength,
       DATA_BLOCK,
       code,
       transactionID,
     );
+    return header;
+  }
 
-    await this._writeChunks(new Uint8Array(header));
-    if (bytes.byteLength > 0) {
-      await this._writeChunks(bytes);
+  /**
+   * Write one data container. The header and the first payload bytes go out in
+   * one transfer. Some devices treat a header-only short transfer as the end of
+   * the data phase and then reject the payload.
+   * @param {number} code
+   * @param {number} transactionID
+   * @param {Uint8Array} bytes
+   * @param {UploadStreamOptions} [options]
+   */
+  async _writeDataContainer(
+    code,
+    transactionID,
+    bytes,
+    { signal, onProgress } = {},
+  ) {
+    const header = this._dataContainerHeader(
+      code,
+      transactionID,
+      bytes.byteLength,
+    );
+    let sent = 0;
+
+    if (bytes.byteLength === 0) {
+      await this.write(header);
+    } else {
+      const firstLength = Math.min(bytes.byteLength, this.writeChunkSize - 12);
+      if (signal?.aborted) {
+        throw createAbortError();
+      }
+
+      const first = new Uint8Array(12 + firstLength);
+      first.set(header, 0);
+      first.set(bytes.subarray(0, firstLength), 12);
+      await this.write(first);
+      sent = firstLength;
+      onProgress?.(sent);
+
+      while (sent < bytes.byteLength) {
+        if (signal?.aborted) {
+          throw createAbortError();
+        }
+
+        const end = Math.min(sent + this.writeChunkSize, bytes.byteLength);
+        await this.write(bytes.subarray(sent, end));
+        sent = end;
+        onProgress?.(sent);
+      }
     }
+
+    await this._endDataPhase(12 + bytes.byteLength);
+    return sent;
+  }
+
+  /**
+   * @param {number} code
+   * @param {number} transactionID
+   * @param {AsyncIterable<Uint8Array>} iterable
+   * @param {number} size
+   * @param {UploadStreamOptions} [options]
+   */
+  async _writeDataContainerIterable(
+    code,
+    transactionID,
+    iterable,
+    size,
+    { signal, onProgress } = {},
+  ) {
+    const header = this._dataContainerHeader(code, transactionID, size);
+    const iterator = iterable[Symbol.asyncIterator]();
+    let sent = 0;
+    let headerSent = false;
+
+    for (;;) {
+      if (signal?.aborted) {
+        throw createAbortError();
+      }
+
+      const { value, done } = await iterator.next();
+      if (done) {
+        break;
+      }
+
+      let chunk = normalizeBytes(value);
+      if (chunk.byteLength === 0) {
+        continue;
+      }
+      if (sent + chunk.byteLength > size) {
+        throw new RangeError(
+          `Upload data exceeds the declared size of ${size} bytes.`,
+        );
+      }
+
+      if (!headerSent) {
+        const firstLength = Math.min(
+          chunk.byteLength,
+          this.writeChunkSize - 12,
+        );
+        const first = new Uint8Array(12 + firstLength);
+        first.set(header, 0);
+        first.set(chunk.subarray(0, firstLength), 12);
+        await this.write(first);
+        headerSent = true;
+        sent = firstLength;
+        onProgress?.(sent);
+        chunk = chunk.subarray(firstLength);
+      }
+
+      while (chunk.byteLength > 0) {
+        if (signal?.aborted) {
+          throw createAbortError();
+        }
+
+        const length = Math.min(chunk.byteLength, this.writeChunkSize);
+        await this.write(chunk.subarray(0, length));
+        sent += length;
+        onProgress?.(sent);
+        chunk = chunk.subarray(length);
+      }
+    }
+
+    if (!headerSent) {
+      if (signal?.aborted) {
+        throw createAbortError();
+      }
+      await this.write(header);
+    }
+    if (sent === size) {
+      await this._endDataPhase(12 + size);
+    }
+
+    return sent;
+  }
+
+  /**
+   * A data phase that ends on an exact packet boundary needs a zero-length
+   * packet. Without it some devices keep waiting for more bytes and never send
+   * the response. The container length is not enough for those devices.
+   */
+  async _endDataPhase(dataPhaseLength) {
+    const packetSize = this.usbconfig?.outPacketSize || 512;
+    if (
+      this.sendZeroLengthPacket &&
+      dataPhaseLength > 0 &&
+      dataPhaseLength % packetSize === 0
+    ) {
+      await this._writeZeroLengthPacket();
+    }
+  }
+
+  async _writeZeroLengthPacket() {
+    if (!this.usbconfig) {
+      throw new Error('The MTP device is not ready.');
+    }
+
+    let result;
+    try {
+      result = await withTimeout(
+        Promise.resolve().then(() =>
+          this.device.transferOut(this.usbconfig.outEPnum, new Uint8Array(0)),
+        ),
+        WRITE_TIMEOUT_MS,
+        'Timed out while ending the MTP data phase.',
+      );
+    } catch (error) {
+      this._log('warn', 'zero-length packet failed; waiting for the response', {
+        endpoint: this.usbconfig.outEPnum,
+        error,
+      });
+      await this._clearHalt('out', this.usbconfig.outEPnum, error);
+      return false;
+    }
+
+    if (result?.status && result.status !== 'ok') {
+      this._log('warn', 'zero-length packet returned a non-ok status', {
+        endpoint: this.usbconfig.outEPnum,
+        status: result.status,
+      });
+      return false;
+    }
+
+    this._log('debug', 'zero-length packet sent', {
+      endpoint: this.usbconfig.outEPnum,
+    });
+    return true;
+  }
+
+  async _clearHalt(direction, endpointNumber, error) {
+    if (!this.device?.clearHalt) {
+      return;
+    }
+    this._log('debug', 'clearing endpoint halt', {
+      direction,
+      endpointNumber,
+      error,
+    });
+    await this.device.clearHalt(direction, endpointNumber).catch(clearError => {
+      this._log('warn', 'could not clear endpoint halt', {
+        direction,
+        endpointNumber,
+        error: clearError,
+      });
+    });
   }
 
   async openSession() {
@@ -1415,7 +2684,7 @@ class Mtp extends EventTarget {
     this.transactionID = 0;
 
     let { response } = await this._executeDirect(
-      { type: COMMAND_BLOCK, code: CODE.OPEN_SESSION.value, payload: [1] },
+      this._command(CODE.OPEN_SESSION, [1]),
       { acceptCodes: [CODE.SESSION_ALREADY_OPEN.value] },
     );
 
@@ -1423,11 +2692,9 @@ class Mtp extends EventTarget {
       // A previous session was never closed (crashed tab, stale connection).
       await this._closeSessionDirect();
       this.transactionID = 0;
-      ({ response } = await this._executeDirect({
-        type: COMMAND_BLOCK,
-        code: CODE.OPEN_SESSION.value,
-        payload: [1],
-      }));
+      ({ response } = await this._executeDirect(
+        this._command(CODE.OPEN_SESSION, [1]),
+      ));
     }
 
     this.sessionOpen = true;
@@ -1444,11 +2711,234 @@ class Mtp extends EventTarget {
       return;
     }
 
-    await this._executeDirect(
-      { type: COMMAND_BLOCK, code: CODE.CLOSE_SESSION.value, payload: [1] },
-      { acceptCodes: [CODE.SESSION_NOT_OPEN.value] },
-    );
+    await this._executeDirect(this._command(CODE.CLOSE_SESSION, [1]), {
+      acceptCodes: [CODE.SESSION_NOT_OPEN.value],
+    });
     this.sessionOpen = false;
+  }
+
+  /**
+   * Read the PTP DeviceInfo dataset. The device permits this command before
+   * a session starts.
+   * @returns {Promise<object>}
+   */
+  async getDeviceInfo() {
+    return decodeDeviceInfo(await this._executeForData(CODE.GET_DEVICE_INFO));
+  }
+
+  /**
+   * Read the thumbnail for one object.
+   * @param {number} objectHandle
+   * @returns {Promise<Uint8Array>} Empty when the device has no thumbnail.
+   */
+  async getThumb(objectHandle) {
+    const handle = readUint32(objectHandle, 'objectHandle');
+    const payload = await this._executeForData(CODE.GET_THUMB, [handle]);
+
+    return new Uint8Array(payload);
+  }
+
+  /**
+   * Read the descriptor for one device property.
+   * @param {number} property Device property code.
+   * @returns {Promise<DevicePropDesc>}
+   */
+  async getDevicePropDesc(property) {
+    return this._getDevicePropDescDirect(readUint16(property, 'property'));
+  }
+
+  async _getDevicePropDescDirect(property) {
+    return decodeDevicePropDesc(
+      await this._executeForDataDirect(CODE.GET_DEVICE_PROP_DESC, [property]),
+    );
+  }
+
+  /**
+   * Read one device property when the caller already knows its data type.
+   * Use getDeviceProperty() when the data type is unknown.
+   * @param {number} property Device property code.
+   * @param {number} datatype
+   */
+  async getDevicePropValue(property, datatype) {
+    const propertyCode = readUint16(property, 'property');
+    const dataType = readUint16(datatype, 'datatype');
+    const payload = await this._executeForData(CODE.GET_DEVICE_PROP_VALUE, [
+      propertyCode,
+    ]);
+
+    return decodePropertyValueData(payload, dataType);
+  }
+
+  /**
+   * Write one device property when the caller already knows its data type.
+   * @param {number} property Device property code.
+   * @param {any} value
+   * @param {number} datatype
+   */
+  async setDevicePropValue(property, value, datatype) {
+    return this._executeForResponse(
+      CODE.SET_DEVICE_PROP_VALUE,
+      [readUint16(property, 'property')],
+      {
+        sendData: encodePropertyValue(readUint16(datatype, 'datatype'), value),
+      },
+    );
+  }
+
+  /** Restore one device property to its factory default. */
+  async resetDevicePropValue(property) {
+    return this._executeForResponse(CODE.RESET_DEVICE_PROP_VALUE, [
+      readUint16(property, 'property'),
+    ]);
+  }
+
+  /**
+   * Read one device property with its descriptor.
+   * @param {number} property Device property code.
+   * @returns {Promise<{descriptor: DevicePropDesc, value: any}>}
+   */
+  async getDeviceProperty(property) {
+    return this._enqueue(() => this._getDevicePropertyDirect(property));
+  }
+
+  async _getDevicePropertyDirect(property) {
+    const propertyCode = readUint16(property, 'property');
+    const descriptor = await this._getDevicePropDescDirect(propertyCode);
+    const payload = await this._executeForDataDirect(
+      CODE.GET_DEVICE_PROP_VALUE,
+      [propertyCode],
+    );
+
+    return {
+      descriptor,
+      value: decodePropertyValueData(payload, descriptor.dataType),
+    };
+  }
+
+  /**
+   * Write one device property and read its data type from the descriptor when
+   * the caller does not supply one.
+   * @param {number} property Device property code.
+   * @param {any} value
+   * @param {number} [datatype]
+   */
+  async setDeviceProperty(property, value, datatype) {
+    return this._enqueue(() =>
+      this._setDevicePropertyDirect(property, value, datatype),
+    );
+  }
+
+  async _setDevicePropertyDirect(property, value, datatype) {
+    const propertyCode = readUint16(property, 'property');
+    const dataType =
+      datatype == null
+        ? (await this._getDevicePropDescDirect(propertyCode)).dataType
+        : readUint16(datatype, 'datatype');
+    const { response } = await this._executeDirect(
+      this._command(CODE.SET_DEVICE_PROP_VALUE, [propertyCode]),
+      { sendData: encodePropertyValue(dataType, value) },
+    );
+
+    return response;
+  }
+
+  /**
+   * Read part of one object with GetPartialObject64. Devices disagree about
+   * the order of the 64-bit offset words, so the first parameter error retries
+   * with the other order and caches the one that works.
+   * @param {number} objectHandle
+   * @param {number} offset
+   * @param {number} length
+   * @param {'hiFirst'|'loFirst'} [order]
+   * @returns {Promise<Uint8Array>}
+   */
+  async getPartial(objectHandle, offset, length, order) {
+    return this._enqueue(() =>
+      this._getPartialDirect(objectHandle, offset, length, order),
+    );
+  }
+
+  async _getPartialDirect(objectHandle, offset, length, order) {
+    readUint32(objectHandle, 'objectHandle');
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new RangeError('offset must be a non-negative safe integer.');
+    }
+    if (!Number.isInteger(length) || length < 0 || length > 0xffffffff) {
+      throw new RangeError('length must be an unsigned 32-bit integer.');
+    }
+    if (order != null && order !== 'hiFirst' && order !== 'loFirst') {
+      throw new TypeError('order must be "hiFirst" or "loFirst".');
+    }
+
+    const firstOrder = order ?? this.partialOrder ?? 'hiFirst';
+    const secondOrder = firstOrder === 'hiFirst' ? 'loFirst' : 'hiFirst';
+
+    try {
+      const bytes = await this._requestPartial(
+        objectHandle,
+        offset,
+        length,
+        firstOrder,
+      );
+      this.partialOrder = firstOrder;
+      this.partialState = 'supported';
+      return bytes;
+    } catch (error) {
+      if (!isPartialOrderError(error)) {
+        throw error;
+      }
+
+      try {
+        const bytes = await this._requestPartial(
+          objectHandle,
+          offset,
+          length,
+          secondOrder,
+        );
+        this.partialOrder = secondOrder;
+        this.partialState = 'supported';
+        return bytes;
+      } catch (lastError) {
+        this.partialOrder = null;
+        this.partialState = 'unsupported';
+        throw lastError;
+      }
+    }
+  }
+
+  async _requestPartial(objectHandle, offset, length, order) {
+    const high = Math.floor(offset / 2 ** 32);
+    const low = offset % 2 ** 32;
+    const offsetWords = order === 'hiFirst' ? [high, low] : [low, high];
+
+    const { data } = await this._executeDirect(
+      this._command(CODE.GET_PARTIAL_OBJECT_64, [
+        objectHandle,
+        ...offsetWords,
+        length,
+      ]),
+      { expectData: true },
+    );
+
+    return new Uint8Array(data.payload);
+  }
+
+  /**
+   * Read part of one object with the 32-bit GetPartialObject command.
+   * Use getPartial() when the offset can exceed 4 GiB.
+   * @param {number} objectHandle
+   * @param {number} offset
+   * @param {number} length
+   * @returns {Promise<Uint8Array>}
+   */
+  async getPartialObject(objectHandle, offset, length) {
+    const payload = await this._executeForData(CODE.GET_PARTIAL_OBJECT, [
+      readUint32(objectHandle, 'objectHandle'),
+      readUint32(offset, 'offset'),
+      readUint32(length, 'length'),
+    ]);
+
+    return new Uint8Array(payload);
   }
 
   /**
@@ -1463,16 +2953,13 @@ class Mtp extends EventTarget {
     format = 0,
     parent = 0xffffffff,
   ) {
-    const { data } = await this._execute(
-      {
-        type: COMMAND_BLOCK,
-        code: CODE.GET_OBJECT_HANDLES.value,
-        payload: [storageId, format, parent],
-      },
-      { expectData: true },
-    );
+    const payload = await this._executeForData(CODE.GET_OBJECT_HANDLES, [
+      readUint32(storageId, 'storageId'),
+      readUint32(format, 'format'),
+      readUint32(parent, 'parent'),
+    ]);
 
-    return decodeUint32List(data.payload);
+    return decodeUint32List(payload);
   }
 
   async getFileName(objectHandle) {
@@ -1480,29 +2967,21 @@ class Mtp extends EventTarget {
   }
 
   async _getFileNameDirect(objectHandle) {
-    const { data } = await this._executeDirect(
-      {
-        type: COMMAND_BLOCK,
-        code: CODE.GET_OBJECT_PROP_VALUE.value,
-        payload: [objectHandle, CODE.OBJECT_FILE_NAME.value],
-      },
-      { expectData: true },
-    );
+    const handle = readUint32(objectHandle, 'objectHandle');
 
-    return decodeMtpString(data.payload);
+    return decodeMtpString(
+      await this._executeForDataDirect(CODE.GET_OBJECT_PROP_VALUE, [
+        handle,
+        CODE.OBJECT_FILE_NAME.value,
+      ]),
+    );
   }
 
   async getFile(objectHandle, _filename) {
-    const { data } = await this._execute(
-      {
-        type: COMMAND_BLOCK,
-        code: CODE.GET_OBJECT.value,
-        payload: [objectHandle],
-      },
-      { expectData: true },
-    );
+    const handle = readUint32(objectHandle, 'objectHandle');
+    const payload = await this._executeForData(CODE.GET_OBJECT, [handle]);
 
-    return new Uint8Array(data.payload);
+    return new Uint8Array(payload);
   }
 
   /**
@@ -1510,12 +2989,7 @@ class Mtp extends EventTarget {
    * @returns {Promise<number[]>}
    */
   async getStorageIDs() {
-    const { data } = await this._execute(
-      { type: COMMAND_BLOCK, code: CODE.GET_STORAGE_IDS.value },
-      { expectData: true },
-    );
-
-    return decodeUint32List(data.payload);
+    return decodeUint32List(await this._executeForData(CODE.GET_STORAGE_IDS));
   }
 
   /**
@@ -1524,16 +2998,9 @@ class Mtp extends EventTarget {
    * @returns {Promise<object>}
    */
   async getStorageInfo(storageId) {
-    const { data } = await this._execute(
-      {
-        type: COMMAND_BLOCK,
-        code: CODE.GET_STORAGE_INFO.value,
-        payload: [storageId],
-      },
-      { expectData: true },
-    );
-
-    const bytes = normalizeBytes(data.payload);
+    const id = readUint32(storageId, 'storageId');
+    const payload = await this._executeForData(CODE.GET_STORAGE_INFO, [id]);
+    const bytes = normalizeBytes(payload);
     if (bytes.byteLength < 26) {
       throw new RangeError(
         `StorageInfo is too short: ${bytes.byteLength} bytes`,
@@ -1561,7 +3028,7 @@ class Mtp extends EventTarget {
     const volumeLabel = readMtpStringAt(bytes, offset);
 
     return {
-      storageId,
+      storageId: id,
       storageType,
       filesystemType,
       accessCapability,
@@ -1575,6 +3042,88 @@ class Mtp extends EventTarget {
   }
 
   /**
+   * Format a storage. Every object in the storage is erased.
+   * @param {number} storageId
+   * @param {number} [filesystemType] `0` for the device default.
+   */
+  async formatStore(storageId, filesystemType = 0) {
+    return this._executeForResponse(CODE.FORMAT_STORE, [
+      readUint32(storageId, 'storageId'),
+      readUint16(filesystemType, 'filesystemType'),
+    ]);
+  }
+
+  /**
+   * Reset the device with the MTP ResetDevice command. The session ends and a
+   * new Mtp instance is required after the device reconnects.
+   */
+  async resetDevice() {
+    const response = await this._executeForResponse(CODE.RESET_DEVICE);
+    this.sessionOpen = false;
+    this.transportHealthy = false;
+    return response;
+  }
+
+  /** Run the device self-test. */
+  async selfTest() {
+    return this._executeForResponse(CODE.SELF_TEST);
+  }
+
+  /**
+   * Set or clear the write-protection flag on one object.
+   * @param {number} objectHandle
+   * @param {number} protectionStatus `0` for none, `1` for read-only.
+   */
+  async setObjectProtection(objectHandle, protectionStatus) {
+    return this._executeForResponse(CODE.SET_OBJECT_PROTECTION, [
+      readUint32(objectHandle, 'objectHandle'),
+      readUint16(protectionStatus, 'protectionStatus'),
+    ]);
+  }
+
+  /**
+   * Start a still-image capture.
+   * @param {number} storageId
+   * @param {number} [format] Object format code.
+   */
+  async initiateCapture(storageId, format = 0) {
+    return this._executeForResponse(CODE.INITIATE_CAPTURE, [
+      readUint32(storageId, 'storageId'),
+      readUint16(format, 'format'),
+    ]);
+  }
+
+  /**
+   * Start an open capture. End it with terminateOpenCapture().
+   * @param {number} storageId
+   * @param {number} [format] Object format code.
+   */
+  async initiateOpenCapture(storageId, format = 0) {
+    return this._executeForResponse(CODE.INITIATE_OPEN_CAPTURE, [
+      readUint32(storageId, 'storageId'),
+      readUint16(format, 'format'),
+    ]);
+  }
+
+  /**
+   * End an open capture.
+   * @param {number} transactionId
+   */
+  async terminateOpenCapture(transactionId) {
+    return this._executeForResponse(CODE.TERMINATE_OPEN_CAPTURE, [
+      readUint32(transactionId, 'transactionId'),
+    ]);
+  }
+
+  /** Power down the device. The session ends and a new instance is required. */
+  async powerDown() {
+    const response = await this._executeForResponse(CODE.POWER_DOWN);
+    this.sessionOpen = false;
+    this.transportHealthy = false;
+    return response;
+  }
+
+  /**
    * Count the objects in a storage or folder.
    * @param {number} storageId
    * @param {number} [format]
@@ -1582,11 +3131,11 @@ class Mtp extends EventTarget {
    * @returns {Promise<number>}
    */
   async getNumObjects(storageId, format = 0, parent = 0xffffffff) {
-    const { response } = await this._execute({
-      type: COMMAND_BLOCK,
-      code: CODE.GET_NUM_OBJECTS.value,
-      payload: [storageId, format, parent],
-    });
+    const response = await this._executeForResponse(CODE.GET_NUM_OBJECTS, [
+      readUint32(storageId, 'storageId'),
+      readUint32(format, 'format'),
+      readUint32(parent, 'parent'),
+    ]);
 
     return response.parameters?.[0] ?? 0;
   }
@@ -1597,16 +3146,10 @@ class Mtp extends EventTarget {
    * @returns {Promise<object>}
    */
   async getObjectInfo(objectHandle) {
-    const { data } = await this._execute(
-      {
-        type: COMMAND_BLOCK,
-        code: CODE.GET_OBJECT_INFO.value,
-        payload: [objectHandle],
-      },
-      { expectData: true },
-    );
+    const handle = readUint32(objectHandle, 'objectHandle');
+    const payload = await this._executeForData(CODE.GET_OBJECT_INFO, [handle]);
 
-    return { handle: objectHandle, ...decodeObjectInfo(data.payload) };
+    return { handle, ...decodeObjectInfo(payload) };
   }
 
   /**
@@ -1615,13 +3158,9 @@ class Mtp extends EventTarget {
    * @returns {Promise<object>} The response container.
    */
   async deleteObject(objectHandle) {
-    const { response } = await this._execute({
-      type: COMMAND_BLOCK,
-      code: CODE.DELETE_OBJECT.value,
-      payload: [objectHandle],
-    });
-
-    return response;
+    return this._executeForResponse(CODE.DELETE_OBJECT, [
+      readUint32(objectHandle, 'objectHandle'),
+    ]);
   }
 
   /**
@@ -1639,16 +3178,251 @@ class Mtp extends EventTarget {
     property = 0xffffffff,
     depth = 0,
   } = {}) {
-    const { data } = await this._execute(
-      {
-        type: COMMAND_BLOCK,
-        code: CODE.GET_OBJECT_PROP_LIST.value,
-        payload: [handle, format, property, 0, depth],
-      },
-      { expectData: true },
+    const payload = await this._executeForData(CODE.GET_OBJECT_PROP_LIST, [
+      readUint32(handle, 'handle'),
+      readUint32(format, 'format'),
+      readUint32(property, 'property'),
+      0,
+      readUint32(depth, 'depth'),
+    ]);
+
+    return decodeObjectPropList(payload);
+  }
+
+  /**
+   * List the object property codes that one format supports.
+   * @param {number} format Object format code.
+   * @returns {Promise<number[]>}
+   */
+  async getObjectPropsSupported(format) {
+    const payload = await this._executeForData(
+      CODE.GET_OBJECT_PROPS_SUPPORTED,
+      [readUint16(format, 'format')],
     );
 
-    return decodeObjectPropList(data.payload);
+    return decodeUint16List(payload);
+  }
+
+  /**
+   * Read the descriptor for one object property.
+   * @param {number} property Property code.
+   * @param {number} format Object format code.
+   * @returns {Promise<ObjectPropDesc>}
+   */
+  async getObjectPropDesc(property, format) {
+    return this._getObjectPropDescDirect(
+      readUint16(property, 'property'),
+      readUint16(format, 'format'),
+    );
+  }
+
+  async _getObjectPropDescDirect(property, format) {
+    return decodeObjectPropDesc(
+      await this._executeForDataDirect(CODE.GET_OBJECT_PROP_DESC, [
+        property,
+        format,
+      ]),
+    );
+  }
+
+  async _getObjectFormatDirect(objectHandle) {
+    const payload = await this._executeForDataDirect(CODE.GET_OBJECT_INFO, [
+      objectHandle,
+    ]);
+    return decodeObjectInfo(payload).format;
+  }
+
+  /**
+   * Read one object property when the caller already knows its data type.
+   * Use getObjectProperty() when the data type is unknown.
+   * @param {number} objectHandle
+   * @param {number} property
+   * @param {number} datatype
+   */
+  async getObjectPropValue(objectHandle, property, datatype) {
+    const handle = readUint32(objectHandle, 'objectHandle');
+    const propertyCode = readUint16(property, 'property');
+    const dataType = readUint16(datatype, 'datatype');
+    const payload = await this._executeForData(CODE.GET_OBJECT_PROP_VALUE, [
+      handle,
+      propertyCode,
+    ]);
+
+    return decodePropertyValueData(payload, dataType);
+  }
+
+  /**
+   * Write one object property when the caller already knows its data type.
+   * @param {number} objectHandle
+   * @param {number} property
+   * @param {any} value
+   * @param {number} datatype
+   */
+  async setObjectPropValue(objectHandle, property, value, datatype) {
+    const handle = readUint32(objectHandle, 'objectHandle');
+    const propertyCode = readUint16(property, 'property');
+    const dataType = readUint16(datatype, 'datatype');
+
+    return this._executeForResponse(
+      CODE.SET_OBJECT_PROP_VALUE,
+      [handle, propertyCode],
+      { sendData: encodePropertyValue(dataType, value) },
+    );
+  }
+
+  /**
+   * Read one object property with its descriptor.
+   * @param {number} objectHandle
+   * @param {number} property
+   * @param {number} [format] Object format code. Read from ObjectInfo when
+   *   omitted.
+   * @returns {Promise<{descriptor: ObjectPropDesc, value: any}>}
+   */
+  async getObjectProperty(objectHandle, property, format) {
+    return this._enqueue(() =>
+      this._getObjectPropertyDirect(objectHandle, property, format),
+    );
+  }
+
+  async _getObjectPropertyDirect(objectHandle, property, format) {
+    const handle = readUint32(objectHandle, 'objectHandle');
+    const propertyCode = readUint16(property, 'property');
+    const objectFormat =
+      format == null
+        ? await this._getObjectFormatDirect(handle)
+        : readUint16(format, 'format');
+    const descriptor = await this._getObjectPropDescDirect(
+      propertyCode,
+      objectFormat,
+    );
+    const payload = await this._executeForDataDirect(
+      CODE.GET_OBJECT_PROP_VALUE,
+      [handle, propertyCode],
+    );
+
+    return {
+      descriptor,
+      value: decodePropertyValueData(payload, descriptor.dataType),
+    };
+  }
+
+  /**
+   * Write one object property and read its data type from the descriptor when
+   * the caller does not supply one.
+   * @param {number} objectHandle
+   * @param {number} property
+   * @param {any} value
+   * @param {{datatype?: number, format?: number}} [options]
+   */
+  async setObjectProperty(objectHandle, property, value, options = {}) {
+    return this._enqueue(() =>
+      this._setObjectPropertyDirect(objectHandle, property, value, options),
+    );
+  }
+
+  /**
+   * @param {number} objectHandle
+   * @param {number} property
+   * @param {any} value
+   * @param {{datatype?: number, format?: number}} [options]
+   */
+  async _setObjectPropertyDirect(
+    objectHandle,
+    property,
+    value,
+    { datatype, format } = {},
+  ) {
+    const handle = readUint32(objectHandle, 'objectHandle');
+    const propertyCode = readUint16(property, 'property');
+    let dataType = datatype;
+
+    if (dataType == null) {
+      const objectFormat =
+        format == null
+          ? await this._getObjectFormatDirect(handle)
+          : readUint16(format, 'format');
+      dataType = (
+        await this._getObjectPropDescDirect(propertyCode, objectFormat)
+      ).dataType;
+    } else {
+      dataType = readUint16(dataType, 'datatype');
+    }
+
+    const { response } = await this._executeDirect(
+      this._command(CODE.SET_OBJECT_PROP_VALUE, [handle, propertyCode]),
+      { sendData: encodePropertyValue(dataType, value) },
+    );
+
+    return response;
+  }
+
+  /**
+   * Write several object properties in one command.
+   * @param {Array<{handle?: number, property: number, datatype: number, value: any}>} entries
+   */
+  async setObjectPropertyList(entries) {
+    if (!Array.isArray(entries)) {
+      throw new TypeError('entries must be an array.');
+    }
+
+    return this._executeForResponse(CODE.SET_OBJECT_PROP_LIST, [], {
+      sendData: encodeObjectPropList(entries),
+    });
+  }
+
+  /**
+   * Read the object handles that one object references.
+   * @param {number} objectHandle
+   * @returns {Promise<number[]>}
+   */
+  async getObjectReferences(objectHandle) {
+    const handle = readUint32(objectHandle, 'objectHandle');
+    const payload = await this._executeForData(CODE.GET_OBJECT_REFERENCES, [
+      handle,
+    ]);
+
+    return decodeUint32List(payload);
+  }
+
+  /**
+   * Replace the object handles that one object references.
+   * @param {number} objectHandle
+   * @param {number[]} handles
+   */
+  async setObjectReferences(objectHandle, handles) {
+    const handle = readUint32(objectHandle, 'objectHandle');
+
+    return this._executeForResponse(CODE.SET_OBJECT_REFERENCES, [handle], {
+      sendData: encodeUint32List(handles),
+    });
+  }
+
+  /**
+   * Move one object to a storage and parent folder.
+   * @param {number} objectHandle
+   * @param {number} storageId
+   * @param {number} [parentObjectHandle] `0` for the storage root.
+   */
+  async moveObject(objectHandle, storageId, parentObjectHandle = 0) {
+    return this._executeForResponse(CODE.MOVE_OBJECT, [
+      readUint32(objectHandle, 'objectHandle'),
+      readUint32(storageId, 'storageId'),
+      readUint32(parentObjectHandle, 'parentObjectHandle'),
+    ]);
+  }
+
+  /**
+   * Copy one object to a storage and parent folder.
+   * @param {number} objectHandle
+   * @param {number} storageId
+   * @param {number} [parentObjectHandle] `0` for the storage root.
+   */
+  async copyObject(objectHandle, storageId, parentObjectHandle = 0) {
+    return this._executeForResponse(CODE.COPY_OBJECT, [
+      readUint32(objectHandle, 'objectHandle'),
+      readUint32(storageId, 'storageId'),
+      readUint32(parentObjectHandle, 'parentObjectHandle'),
+    ]);
   }
 
   /**
@@ -1673,24 +3447,17 @@ class Mtp extends EventTarget {
     }
 
     const payload = [
-      storageId,
-      parentObjectHandle,
-      format,
+      readUint32(storageId, 'storageId'),
+      readUint32(parentObjectHandle, 'parentObjectHandle'),
+      readUint16(format, 'format'),
       Number((objectSize >> 32n) & 0xffffffffn),
       Number(objectSize & 0xffffffffn),
     ];
     const properties = entries.map(entry => ({ ...entry, handle: 0 }));
 
-    const { response } = await this._execute(
-      {
-        type: COMMAND_BLOCK,
-        code: CODE.SEND_OBJECT_PROP_LIST.value,
-        payload,
-      },
-      { sendData: encodeObjectPropList(properties) },
-    );
-
-    return response;
+    return this._executeForResponse(CODE.SEND_OBJECT_PROP_LIST, payload, {
+      sendData: encodeObjectPropList(properties),
+    });
   }
 
   /**
@@ -1700,19 +3467,51 @@ class Mtp extends EventTarget {
    * devices omit it, so the handle is then looked up in the parent folder by
    * file name.
    *
+   * An AsyncIterable upload needs `size`. An upload cannot be aborted cleanly
+   * after the data phase starts. An abort at that point marks the transport
+   * unhealthy.
+   *
    * @param {object} options
    * @param {number} options.storageId
    * @param {number} options.parentObjectHandle Folder handle, `0xFFFFFFFF`
    *   for the storage root.
    * @param {string} options.filename
-   * @param {ArrayBuffer|Uint8Array} options.data
+   * @param {ArrayBuffer|Uint8Array|AsyncIterable<Uint8Array>} options.data
+   * @param {number} [options.size] Total size in bytes. Required for an
+   *   AsyncIterable.
+   * @param {(sent: number) => void} [options.onProgress] Called after each
+   *   chunk with the total number of bytes sent.
+   * @param {AbortSignal} [options.signal] Stops before the data phase.
    * @param {number} [options.format] Object format code.
    * @param {string} [options.dateCreated] MTP date string.
    * @param {string} [options.dateModified] MTP date string.
    * @returns {Promise<number>} The object handle of the new file.
    */
   async uploadFile(options) {
-    return this._enqueue(() => this._uploadFileDirect(options));
+    return this._enqueue(async () => {
+      this._log('info', 'upload started', {
+        filename: options?.filename,
+        storageId: options?.storageId,
+        parentObjectHandle: options?.parentObjectHandle,
+        declaredSize: options?.size,
+      });
+
+      try {
+        const { handle, filename: finalFilename } =
+          await this._uploadFileDirect(options);
+        this._log('info', 'upload complete', {
+          filename: finalFilename,
+          handle,
+        });
+        return handle;
+      } catch (error) {
+        this._log('error', 'upload failed', {
+          filename: options?.filename,
+          error,
+        });
+        throw error;
+      }
+    });
   }
 
   async _uploadFileDirect(options) {
@@ -1721,58 +3520,202 @@ class Mtp extends EventTarget {
       parentObjectHandle,
       filename,
       data,
+      size,
+      onProgress,
+      signal,
       format = OBJECT_FORMAT.UNDEFINED,
       dateCreated,
       dateModified,
     } = options;
-    const bytes = normalizeBytes(data);
-    const info = encodeObjectInfo({
-      storageId,
-      parent: parentObjectHandle,
-      format,
-      size: bytes.byteLength,
-      filename,
-      dateCreated,
-      dateModified,
+    if (typeof filename !== 'string' || filename.length === 0) {
+      throw new TypeError('filename must be a non-empty string.');
+    }
+
+    const storage = readUint32(storageId, 'storageId');
+    const parent = readUint32(parentObjectHandle, 'parentObjectHandle');
+    const objectFormat = readUint16(format, 'format');
+    const source = normalizeUploadSource(data, size);
+    this._log('debug', 'upload source ready', {
+      size: source.size,
+      streaming: Boolean(source.iterable),
     });
 
-    const { response } = await this._executeDirect(
-      {
-        type: COMMAND_BLOCK,
-        code: CODE.SEND_OBJECT_INFO.value,
-        payload: [storageId, parentObjectHandle],
-      },
-      { sendData: info },
-    );
+    const { response, filename: uploadFilename } =
+      await this._sendObjectInfoForUpload({
+        storage,
+        parent,
+        format: objectFormat,
+        size: source.size,
+        filename,
+        dateCreated,
+        dateModified,
+        signal,
+      });
 
-    await this._executeDirect(
-      { type: COMMAND_BLOCK, code: CODE.SEND_OBJECT.value },
-      { sendData: bytes },
-    );
+    if (signal?.aborted) {
+      throw createAbortError();
+    }
+
+    await this._sendObject(source, { signal, onProgress });
 
     const handle = response.parameters?.[2];
     if (handle) {
-      return handle;
+      return { handle, filename: uploadFilename };
     }
 
-    return this._findHandleByNameDirect(
-      storageId,
-      parentObjectHandle,
-      filename,
+    return {
+      handle: await this._findHandleByNameDirect(
+        storage,
+        parent,
+        uploadFilename,
+      ),
+      filename: uploadFilename,
+    };
+  }
+
+  /**
+   * Send SendObjectInfo. If the device rejects a duplicate name with
+   * GeneralError, retry as `name (2).ext`, `name (3).ext`, and so on.
+   * @param {object} options
+   * @param {number} options.storage
+   * @param {number} options.parent
+   * @param {number} options.format
+   * @param {number} options.size
+   * @param {string} options.filename
+   * @param {string} [options.dateCreated]
+   * @param {string} [options.dateModified]
+   * @param {AbortSignal} [options.signal]
+   * @returns {Promise<{response: MtpResponse, filename: string}>}
+   */
+  async _sendObjectInfoForUpload({
+    storage,
+    parent,
+    format,
+    size,
+    filename,
+    dateCreated,
+    dateModified,
+    signal,
+  }) {
+    let uploadFilename = filename;
+
+    for (let attempt = 1; attempt <= MAX_UPLOAD_NAME_ATTEMPTS; attempt += 1) {
+      if (signal?.aborted) {
+        throw createAbortError();
+      }
+
+      const info = encodeObjectInfo({
+        storageId: storage,
+        parent,
+        format,
+        size,
+        filename: uploadFilename,
+        dateCreated,
+        dateModified,
+      });
+
+      try {
+        const { response } = await this._executeDirect(
+          this._command(CODE.SEND_OBJECT_INFO, [storage, parent]),
+          { sendData: info },
+        );
+        return { response, filename: uploadFilename };
+      } catch (error) {
+        if (!isGeneralError(error) || attempt === MAX_UPLOAD_NAME_ATTEMPTS) {
+          if (attempt === 1) {
+            throw error;
+          }
+          throw new Error(
+            `Upload failed for "${filename}" after ${attempt} name attempts. ` +
+              `The folder may already contain that name. ${error.message}`,
+            { cause: error },
+          );
+        }
+
+        uploadFilename = numberedFilename(filename, attempt + 1);
+        this._log('info', 'upload name already exists; retrying', {
+          filename: uploadFilename,
+          attempt: attempt + 1,
+        });
+      }
+    }
+
+    throw new Error(`Upload failed for "${filename}".`);
+  }
+
+  /**
+   * @param {{size: number, bytes?: Uint8Array, iterable?: AsyncIterable<Uint8Array>}} source
+   * @param {UploadStreamOptions} [options]
+   */
+  async _sendObject(source, { signal, onProgress } = {}) {
+    const transactionID = this.transactionID;
+
+    this._log('debug', 'command', {
+      code: CODE.SEND_OBJECT.name,
+      transactionID,
+      parameters: [],
+      expectsData: false,
+      sendDataBytes: source.size,
+    });
+
+    await this.write(
+      this.buildContainerPacket(this._command(CODE.SEND_OBJECT)),
     );
+
+    let sent;
+    try {
+      sent = source.bytes
+        ? await this._writeDataContainer(
+            CODE.SEND_OBJECT.value,
+            transactionID,
+            source.bytes,
+            { signal, onProgress },
+          )
+        : await this._writeDataContainerIterable(
+            CODE.SEND_OBJECT.value,
+            transactionID,
+            source.iterable,
+            source.size,
+            { signal, onProgress },
+          );
+    } catch (error) {
+      this.transportHealthy = false;
+      throw error;
+    }
+
+    if (sent !== source.size) {
+      this.transportHealthy = false;
+      throw new Error(
+        `Upload ended after ${sent} bytes; expected ${source.size} bytes.`,
+      );
+    }
+
+    // The response timeout starts after the last byte, not before the upload.
+    const response = await this._readResponse(
+      transactionID,
+      Date.now() + this.transferDeadlineMs,
+      CODE.SEND_OBJECT.value,
+    );
+    this._log('debug', 'response', {
+      code: response.code,
+      codeValue: response.codeValue,
+      transactionID: response.transactionID,
+    });
+    if (response.codeValue !== CODE.OK.value) {
+      throw new MtpResponseError(response, CODE.SEND_OBJECT.value);
+    }
+
+    return response;
   }
 
   async _findHandleByNameDirect(storageId, parentObjectHandle, filename) {
-    const { data: handlesData } = await this._executeDirect(
-      {
-        type: COMMAND_BLOCK,
-        code: CODE.GET_OBJECT_HANDLES.value,
-        payload: [storageId, 0, parentObjectHandle],
-      },
-      { expectData: true },
-    );
+    const payload = await this._executeForDataDirect(CODE.GET_OBJECT_HANDLES, [
+      storageId,
+      0,
+      parentObjectHandle,
+    ]);
 
-    for (const handle of decodeUint32List(handlesData.payload)) {
+    for (const handle of decodeUint32List(payload)) {
       if ((await this._getFileNameDirect(handle)) === filename) {
         return handle;
       }
@@ -1796,9 +3739,10 @@ class Mtp extends EventTarget {
     this._closing = true;
     await this.ready.catch(() => {});
     await this._operationQueue;
+    await this._recoveryPromise?.catch(() => {});
 
     try {
-      if (this.sessionOpen && this._transportHealthy) {
+      if (this.sessionOpen && this.transportHealthy) {
         await this._closeSessionDirect();
       }
     } catch (error) {
@@ -1848,11 +3792,91 @@ const folderPath = document.querySelector('#folder-path');
 const fileCount = document.querySelector('#file-count');
 const notice = document.querySelector('#notice');
 const themeToggle = document.querySelector('#theme-toggle');
+const logOutput = document.querySelector('#log');
+const copyLogButton = document.querySelector('#copy-log');
 
 let mtp = null;
 let selectedStorageId = null;
 let folderStack = [{ handle: 0xffffffff, name: 'Storage root' }];
 const storageInfo = new Map();
+const usbSupported = isSupported();
+const logLines = [];
+
+function logContext(context) {
+  if (!context) {
+    return '';
+  }
+  if (context.error instanceof Error) {
+    return ` ${context.error.name}: ${context.error.message}`;
+  }
+  try {
+    const text = JSON.stringify(context);
+    return text && text !== '{}' ? ` ${text}` : '';
+  } catch {
+    return '';
+  }
+}
+
+function appendLog(level, message, context) {
+  const line = `${new Date().toLocaleTimeString()} ${level.toUpperCase()} ${message}${logContext(
+    context,
+  )}`;
+  logLines.push(line);
+  if (logLines.length > 300) {
+    logLines.shift();
+  }
+  if (logOutput) {
+    logOutput.textContent = logLines.join('\n');
+    logOutput.scrollTop = logOutput.scrollHeight;
+  }
+  const consoleApi = globalThis.console;
+  const method = consoleApi?.[level] ?? consoleApi?.log;
+  method?.call(consoleApi, `[mtp-web] ${message}`, context ?? '');
+}
+
+const demoLogger = {
+  debug: (message, context) => appendLog('debug', message, context),
+  info: (message, context) => appendLog('info', message, context),
+  warn: (message, context) => appendLog('warn', message, context),
+  error: (message, context) => appendLog('error', message, context),
+};
+
+function copyLogWithSelection(text) {
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.append(area);
+  area.select();
+  const copied = document.execCommand?.('copy') ?? false;
+  area.remove();
+  return copied;
+}
+
+async function copyConnectionLog() {
+  const text = logLines.join('\n') || 'No log entries.';
+  let copied = false;
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    }
+  } catch {
+    // Some browsers block the Clipboard API outside a secure context.
+  }
+
+  if (!copied) {
+    copied = copyLogWithSelection(text);
+  }
+
+  if (copied) {
+    setNotice('Connection log copied');
+  } else {
+    setNotice('Could not copy the log. Select the text and copy it.', 'danger');
+  }
+}
 
 const THEME_KEY = 'mtp-web-theme';
 const ICONS = {
@@ -1869,6 +3893,7 @@ const ICONS = {
   upload: ['M12 16V4', 'm6 10 6-6 6 6', 'M4 20h16'],
   download: ['M12 4v12', 'm6 10 6 6 6-6', 'M4 20h16'],
   trash: ['M3 6h18', 'M8 6V4h8v2', 'M19 6l-1 14H6L5 6', 'M10 11v6', 'M14 11v6'],
+  copy: ['M8 8h11v11H8z', 'M5 16V5h11'],
   sun: [
     'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
     'M12 2v2',
@@ -1976,6 +4001,16 @@ function describeError(error, fallback) {
   if (/AccessDenied|denied/i.test(message)) {
     return 'Your phone denied that action.';
   }
+  if (
+    /OperationNotSupported|ParameterNotSupported|InvalidParameter/i.test(
+      message,
+    )
+  ) {
+    return 'Your phone does not support that action.';
+  }
+  if (/out of sync|deadline exceeded/i.test(message)) {
+    return 'The phone connection was lost. Connect again.';
+  }
   if (/not ready|not found|reconnect|session/i.test(message)) {
     return 'Your phone is not ready. Reconnect it and try again.';
   }
@@ -1990,20 +4025,37 @@ function itemCount(count) {
   return `${count} item${count === 1 ? '' : 's'}`;
 }
 
-function resetTable(message = 'Connect your phone to see its files.') {
+function resetTable(
+  title = 'No phone connected',
+  detail = 'Connect your phone to browse its files.',
+) {
   table.replaceChildren();
   const row = document.createElement('tr');
   const cell = document.createElement('td');
   cell.colSpan = 3;
   cell.className = 'empty';
-  cell.textContent = message;
+
+  const heading = document.createElement('p');
+  heading.className = 'empty-title';
+  heading.textContent = title;
+
+  const hint = document.createElement('p');
+  hint.className = 'empty-detail';
+  hint.textContent = detail;
+
+  cell.append(heading, hint);
   row.append(cell);
   table.append(row);
 }
 
 function updateConnectionState() {
-  connectButton.textContent = mtp ? 'Change phone' : 'Connect phone';
+  connectButton.textContent = mtp ? 'Switch phone' : 'Connect phone';
   setIcon(connectButton, 'phone');
+  connectButton.classList.toggle('primary', !mtp);
+  connectButton.disabled = !usbSupported;
+  connectButton.title = usbSupported
+    ? ''
+    : 'This browser does not support WebUSB. Use Chrome or Edge.';
   disconnectButton.disabled = !mtp;
 }
 
@@ -2025,16 +4077,14 @@ async function disconnect({ silent = false } = {}) {
   resetTable();
   setFileCount('No items', 'neutral');
   updateUploadState();
-  connectButton.disabled = true;
-
-  await current?.close().catch(() => {});
-
-  connectButton.disabled = false;
+  connectButton.disabled = !usbSupported;
   updateConnectionState();
 
   if (!silent) {
     setStatus('Phone disconnected', 'neutral');
   }
+
+  await current?.close().catch(() => {});
 }
 
 function currentFolder() {
@@ -2078,7 +4128,14 @@ function goBackOneFolder() {
 function updateUploadState() {
   if (!mtp) {
     uploadButton.disabled = true;
-    uploadButton.title = '';
+    uploadButton.title = 'Connect your phone to upload files.';
+    storageNote.textContent = '';
+    return;
+  }
+
+  if (currentStorage() == null) {
+    uploadButton.disabled = true;
+    uploadButton.title = 'No storage is available.';
     storageNote.textContent = '';
     return;
   }
@@ -2091,6 +4148,15 @@ function updateUploadState() {
   storageNote.textContent = readOnly
     ? 'This storage is read only. You can download files, but you cannot upload.'
     : '';
+}
+
+function setUploadLabel(text) {
+  const label = [...uploadButton.childNodes].find(
+    node => node.nodeType === Node.TEXT_NODE,
+  );
+  if (label) {
+    label.textContent = text;
+  }
 }
 
 function formatBytes(bytes) {
@@ -2290,26 +4356,47 @@ function addRow(object) {
 }
 
 async function loadObjects() {
-  table.replaceChildren();
-  if (selectedStorageId == null) return;
-
-  const handles = await mtp.getObjectHandles(
-    currentStorage(),
-    0,
-    currentFolder().handle,
-  );
-  handles.sort((a, b) => b - a);
-
-  if (handles.length === 0) {
-    resetTable('This folder is empty.');
-    setFileCount(itemCount(0), 'neutral');
+  if (selectedStorageId == null) {
+    resetTable(
+      mtp ? 'No storage is available' : 'No phone connected',
+      mtp
+        ? 'Unlock your phone and allow file access.'
+        : 'Connect your phone to browse its files.',
+    );
+    setFileCount('No items', 'neutral');
     return;
   }
 
-  for (const handle of handles) {
-    addRow(await mtp.getObjectInfo(handle));
+  resetTable('Loading files…', 'This can take a moment on a large folder.');
+  setFileCount('Loading…', 'warning');
+
+  try {
+    const handles = await mtp.getObjectHandles(
+      currentStorage(),
+      0,
+      currentFolder().handle,
+    );
+    handles.sort((a, b) => b - a);
+
+    if (handles.length === 0) {
+      resetTable(
+        'This folder is empty',
+        'Upload a file to add it to this folder.',
+      );
+      setFileCount(itemCount(0), 'neutral');
+      return;
+    }
+
+    table.replaceChildren();
+    for (const handle of handles) {
+      addRow(await mtp.getObjectInfo(handle));
+    }
+    setFileCount(itemCount(handles.length), 'success');
+  } catch (error) {
+    resetTable('Could not load files', 'Try again or reconnect your phone.');
+    setFileCount('No items', 'neutral');
+    throw error;
   }
-  setFileCount(itemCount(handles.length), 'success');
 }
 
 connectButton.addEventListener('click', async () => {
@@ -2344,7 +4431,10 @@ connectButton.addEventListener('click', async () => {
   connectButton.disabled = true;
 
   try {
-    mtp = new Mtp(null, null, device);
+    mtp = new Mtp(null, null, device, {
+      logLevel: 'debug',
+      logger: demoLogger,
+    });
     mtp.addEventListener('error', event => {
       setNotice(describeError(event.error ?? event, 'Phone error'), 'danger');
     });
@@ -2358,9 +4448,26 @@ connectButton.addEventListener('click', async () => {
     updateUploadState();
     setStatus(`Connected to ${device.productName || 'your phone'}`, 'success');
   } catch (error) {
+    appendLog('error', 'Connection failed', { error });
+    const unhealthy = mtp && !mtp.isTransportHealthy();
+
+    if (unhealthy) {
+      setStatus('Resetting phone connection…', 'warning');
+      await mtp
+        .resetUsbDevice()
+        .catch(resetError =>
+          appendLog('warn', 'USB reset failed', { error: resetError }),
+        );
+    }
+
     await disconnect({ silent: true });
-    setStatus('Phone not connected', 'neutral');
-    setNotice(describeError(error, 'Could not connect'), 'danger');
+    setStatus('Phone not connected', 'danger');
+    setNotice(
+      unhealthy
+        ? 'The phone connection was reset. Unplug the USB cable, reconnect the phone, then connect again.'
+        : describeError(error, 'Could not connect'),
+      'danger',
+    );
   } finally {
     connectButton.disabled = false;
     updateConnectionState();
@@ -2439,22 +4546,58 @@ async function uploadSelectedFile() {
   }
 
   uploadButton.disabled = true;
+  uploadButton.setAttribute('aria-busy', 'true');
+  setUploadLabel('Uploading…');
 
   try {
     const data = new Uint8Array(await file.arrayBuffer());
-    await mtp.uploadFile({
+    setNotice(`Uploading ${file.name}…`, 'warning');
+    const handle = await mtp.uploadFile({
       storageId: currentStorage(),
       parentObjectHandle: currentFolder().handle,
       filename: file.name,
       data,
       format: OBJECT_FORMAT.UNDEFINED,
+      onProgress: sent =>
+        setNotice(
+          `Uploading ${file.name}… ${formatBytes(sent)} of ${formatBytes(
+            data.byteLength,
+          )}`,
+          'warning',
+        ),
     });
-    setNotice(`Uploaded ${file.name}`);
+
+    let uploadedName = file.name;
+    try {
+      uploadedName = (await mtp.getObjectInfo(handle)).filename;
+    } catch (error) {
+      appendLog('warn', 'Could not read the uploaded file name', { error });
+    }
+
+    setNotice(`Uploaded ${uploadedName}`);
     await loadObjects();
   } catch (error) {
+    console.error('Upload failed', error);
+    if (mtp && !mtp.isTransportHealthy()) {
+      setStatus('Resetting phone connection…', 'warning');
+      await mtp
+        .resetUsbDevice()
+        .catch(resetError =>
+          appendLog('warn', 'USB reset failed', { error: resetError }),
+        );
+      await disconnect({ silent: true });
+      setStatus('Phone not connected', 'danger');
+      setNotice(
+        'The phone connection was reset. Unplug the USB cable, reconnect the phone, then connect again.',
+        'danger',
+      );
+      return;
+    }
     setNotice(describeError(error, 'Could not upload that file'), 'danger');
   } finally {
     fileInput.value = '';
+    uploadButton.removeAttribute('aria-busy');
+    setUploadLabel('Upload file');
     updateUploadState();
   }
 }
@@ -2478,10 +4621,29 @@ setIcon(folderBackButton, 'back');
 setIcon(refreshButton, 'refresh');
 setIcon(disconnectButton, 'disconnect');
 setIcon(uploadButton, 'upload');
+if (copyLogButton) {
+  setIcon(copyLogButton, 'copy');
+  copyLogButton.addEventListener('click', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    copyConnectionLog();
+  });
+}
 folderBackButton.addEventListener('click', goBackOneFolder);
 updateFolderHeader();
 updateThemeToggle();
 updateConnectionState();
+updateUploadState();
+resetTable();
+appendLog('info', 'Demo ready');
+
+if (!usbSupported) {
+  setStatus('WebUSB is not supported', 'danger');
+  setNotice(
+    'Open this page in Chrome or Edge on a desktop computer.',
+    'danger',
+  );
+}
 
 window.addEventListener('beforeunload', () => {
   mtp?.close();

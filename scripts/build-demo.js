@@ -3,18 +3,18 @@ import { readFile, writeFile } from 'node:fs/promises';
 const LIBRARY = new URL('../src/mtp.js', import.meta.url);
 const DEMO = new URL('../_site/script.js', import.meta.url);
 const OUTPUT = new URL('../_site/demo.js', import.meta.url);
-const IMPORT =
-  "import Mtp, { OBJECT_FORMAT, STORAGE_ACCESS } from '../src/mtp.js';\n\n";
+const IMPORT_PATTERN = /^import\s+[\s\S]*?from '\.\.\/src\/mtp\.js';\n\n/;
 
 function stripExports(source) {
   return source.replace(/^export default /gm, '').replace(/^export /gm, '');
 }
 
 function stripImport(source) {
-  if (!source.startsWith(IMPORT)) {
+  const match = source.match(IMPORT_PATTERN);
+  if (!match) {
     throw new Error('_site/script.js must start with the library import.');
   }
-  return source.slice(IMPORT.length);
+  return source.slice(match[0].length);
 }
 
 function build(library, demo) {

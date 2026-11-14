@@ -16,5 +16,5 @@
     "skipLibCheck": true,
     "types": ["node", "w3c-web-usb"]
   },
-  "include": ["src/**/*.js"]
+  "include": ["src/**/*.js", "src/usb.d.ts"]
 }
