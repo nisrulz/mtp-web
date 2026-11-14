@@ -6,6 +6,7 @@ import Mtp, {
   decodeMtpString,
   decodeObjectInfo,
   decodeObjectPropList,
+  encodeMtpDate,
   encodeMtpString,
   encodeObjectInfo,
   encodeObjectPropList,
@@ -14,6 +15,7 @@ import Mtp, {
   OBJECT_FORMAT,
   OBJECT_PROPERTY,
   parseContainerPacket,
+  STORAGE_ACCESS,
 } from '../src/mtp.js';
 
 const COMMAND_BLOCK = 1;
@@ -574,6 +576,37 @@ function joinWrites(device) {
   return concatBytes(device.writes.map(write => write.bytes));
 }
 
+function bigIntBytes(value, size = 16) {
+  let number = BigInt(value);
+  if (number < 0n) {
+    number += 1n << BigInt(size * 8);
+  }
+  const out = new Uint8Array(size);
+  for (let index = 0; index < size; index += 1) {
+    out[index] = Number(number & 0xffn);
+    number >>= 8n;
+  }
+  return out;
+}
+
+function propListElement(
+  handle,
+  property,
+  datatype,
+  value = new Uint8Array(0),
+) {
+  const head = new Uint8Array(8);
+  const view = new DataView(head.buffer);
+  view.setUint32(0, handle, true);
+  view.setUint16(4, property, true);
+  view.setUint16(6, datatype, true);
+  return concatBytes([head, value]);
+}
+
+function propListPayload(elements) {
+  return concatBytes([u32(elements.length), ...elements]);
+}
+
 function storageInfoPayload({ access = 1 } = {}) {
   const description = encodeMtpString('Internal storage');
   const label = encodeMtpString('Pixel');
@@ -703,7 +736,8 @@ test('getObjectInfo decodes the ObjectInfo dataset', async () => {
     response(OK, 1),
   ]);
 
-  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
+  const device = new FakeDevice(stream);
+  const mtp = new Mtp(0x1234, 0x5678, device);
   await mtp.ready;
   await mtp.openSession();
 
@@ -711,6 +745,13 @@ test('getObjectInfo decodes the ObjectInfo dataset', async () => {
   assert.equal(decoded.handle, 55);
   assert.equal(decoded.filename, 'clip.mp4');
   assert.equal(decoded.size, 9001);
+
+  const command = new DataView(
+    device.writes[1].bytes.buffer,
+    device.writes[1].bytes.byteOffset,
+    device.writes[1].bytes.byteLength,
+  );
+  assert.equal(command.getUint32(12, true), 55);
 });
 
 test('deleteObject waits for the response phase only', async () => {
@@ -777,6 +818,7 @@ test('uploadFile sends the object info and the file contents', async () => {
 
   const objectOffset = infoHeader + infoLength;
   assert.equal(view.getUint16(objectOffset + 6, true), 0x100d); // SendObject
+  assert.equal(view.getUint32(objectOffset, true), 12); // no parameters
   const objectHeader = objectOffset + view.getUint32(objectOffset, true);
   assert.equal(view.getUint32(objectHeader, true), 12 + data.byteLength);
   assert.deepEqual(
@@ -946,4 +988,633 @@ test('sendObjectPropertyList sends a property list data container', async () => 
   );
   assert.equal(list.count, 1);
   assert.equal(list.elements[0].value, 'notes.txt');
+});
+
+test('buildContainerPacket handles an empty payload and clamps values', () => {
+  const empty = buildContainerPacket(0xffffffff, {
+    type: COMMAND_BLOCK,
+    code: 0x1002,
+  });
+  assert.equal(empty.byteLength, 12);
+
+  const packet = buildContainerPacket(-1, {
+    type: COMMAND_BLOCK,
+    code: 0x1007,
+    payload: [0, -1, 0x100000000],
+  });
+  const view = new DataView(packet);
+  assert.equal(view.getUint32(8, true), 0xffffffff);
+  assert.deepEqual(
+    [12, 16, 20].map(offset => view.getUint32(offset, true)),
+    [0, 0xffffffff, 0],
+  );
+});
+
+test('parseContainerPacket handles unknown types and a shorter length', () => {
+  const packet = buildContainerPacket(3, {
+    type: 0x99,
+    code: 0x9999,
+    payload: [1, 2],
+  });
+  const backing = new Uint8Array(packet.byteLength + 8);
+  backing.set(new Uint8Array(packet));
+
+  const full = parseContainerPacket(
+    new DataView(backing.buffer),
+    packet.byteLength,
+  );
+  assert.equal(full.type, 'Unknown (153)');
+  assert.equal(full.code, 'Unknown (0x9999)');
+  assert.deepEqual(full.parameters, [1, 2]);
+  assert.equal(full.payload.byteLength, 8);
+
+  const shorter = parseContainerPacket(new DataView(backing.buffer), 16);
+  assert.deepEqual(shorter.parameters, [1]);
+  assert.equal(shorter.payload.byteLength, 4);
+});
+
+test('MTP strings preserve surrogate pairs and enforce the maximum', () => {
+  const maximum = 'a'.repeat(254);
+  assert.equal(decodeMtpString(encodeMtpString(maximum)), maximum);
+  assert.throws(() => encodeMtpString(`${maximum}a`), RangeError);
+
+  const emoji = '😀';
+  assert.equal(decodeMtpString(encodeMtpString(emoji)), emoji);
+  assert.equal(encodeMtpString(emoji)[0], 3);
+
+  // A device can declare 255 characters but send only one.
+  assert.equal(decodeMtpString(new Uint8Array([255, 0x41, 0x00])), 'A');
+});
+
+test('encodeMtpDate formats a UTC date in the MTP layout', () => {
+  assert.equal(
+    encodeMtpDate(new Date(Date.UTC(2026, 0, 2, 3, 4, 5))),
+    '20260102T030405',
+  );
+});
+
+test('ObjectInfo writes defaults and preserves every field', () => {
+  const defaults = decodeObjectInfo(encodeObjectInfo());
+  assert.equal(defaults.storageId, 0);
+  assert.equal(defaults.format, OBJECT_FORMAT.UNDEFINED);
+  assert.equal(defaults.size, 0);
+  assert.equal(defaults.parent, 0);
+  assert.equal(defaults.filename, '');
+  assert.equal(defaults.dateCreated, '');
+  assert.equal(defaults.dateModified, '');
+  assert.equal(defaults.keywords, '');
+
+  const decoded = decodeObjectInfo(
+    encodeObjectInfo({
+      storageId: 0x00010001,
+      format: OBJECT_FORMAT.ASSOCIATION,
+      protectionStatus: 3,
+      size: 0xffffffff,
+      parent: 0xffffffff,
+      associationType: 1,
+      associationDescription: 2,
+      sequenceNumber: 3,
+      filename: 'folder',
+      dateCreated: '20260102T030405',
+      dateModified: '20260103T040506',
+      keywords: 'test',
+    }),
+  );
+
+  assert.equal(decoded.storageId, 0x00010001);
+  assert.equal(decoded.format, OBJECT_FORMAT.ASSOCIATION);
+  assert.equal(decoded.protectionStatus, 3);
+  assert.equal(decoded.size, 0xffffffff);
+  assert.equal(decoded.parent, 0xffffffff);
+  assert.equal(decoded.associationType, 1);
+  assert.equal(decoded.associationDescription, 2);
+  assert.equal(decoded.sequenceNumber, 3);
+  assert.equal(decoded.filename, 'folder');
+  assert.equal(decoded.dateCreated, '20260102T030405');
+  assert.equal(decoded.dateModified, '20260103T040506');
+  assert.equal(decoded.keywords, 'test');
+});
+
+test('decodeObjectInfo rejects a dataset shorter than the fixed header', () => {
+  assert.throws(
+    () => decodeObjectInfo(new Uint8Array(51)),
+    /ObjectInfo is too short/,
+  );
+});
+
+test('property lists encode and decode every MTP datatype', () => {
+  const entries = [
+    {
+      property: OBJECT_PROPERTY.NAME,
+      datatype: MTP_DATATYPE.NONE,
+      value: null,
+    },
+    { property: OBJECT_PROPERTY.NAME, datatype: MTP_DATATYPE.INT8, value: -5 },
+    {
+      property: OBJECT_PROPERTY.NAME,
+      datatype: MTP_DATATYPE.UINT8,
+      value: 250,
+    },
+    {
+      property: OBJECT_PROPERTY.NAME,
+      datatype: MTP_DATATYPE.INT16,
+      value: -300,
+    },
+    {
+      property: OBJECT_PROPERTY.NAME,
+      datatype: MTP_DATATYPE.UINT16,
+      value: 65000,
+    },
+    {
+      property: OBJECT_PROPERTY.NAME,
+      datatype: MTP_DATATYPE.INT32,
+      value: -70000,
+    },
+    {
+      property: OBJECT_PROPERTY.NAME,
+      datatype: MTP_DATATYPE.UINT32,
+      value: 4000000000,
+    },
+    {
+      property: OBJECT_PROPERTY.NAME,
+      datatype: MTP_DATATYPE.INT64,
+      value: -5n,
+    },
+    {
+      property: OBJECT_PROPERTY.NAME,
+      datatype: MTP_DATATYPE.UINT64,
+      value: 5n,
+    },
+    {
+      property: OBJECT_PROPERTY.NAME,
+      datatype: MTP_DATATYPE.INT128,
+      value: -1n,
+    },
+    {
+      property: OBJECT_PROPERTY.NAME,
+      datatype: MTP_DATATYPE.UINT128,
+      value: 1n << 100n,
+    },
+    {
+      property: OBJECT_PROPERTY.NAME,
+      datatype: MTP_DATATYPE.STRING,
+      value: 'value',
+    },
+  ];
+  const { count, elements } = decodeObjectPropList(
+    encodeObjectPropList(entries),
+  );
+
+  assert.equal(count, entries.length);
+  assert.equal(elements[0].value, null);
+  assert.equal(elements[1].value, -5);
+  assert.equal(elements[2].value, 250);
+  assert.equal(elements[3].value, -300);
+  assert.equal(elements[4].value, 65000);
+  assert.equal(elements[5].value, -70000);
+  assert.equal(elements[6].value, 4000000000);
+  assert.equal(elements[7].value, -5n);
+  assert.equal(elements[8].value, 5n);
+  assert.deepEqual(elements[9].value, bigIntBytes(-1n));
+  assert.deepEqual(elements[10].value, bigIntBytes(1n << 100n));
+  assert.equal(elements[11].value, 'value');
+});
+
+test('decodeObjectPropList handles empty and truncated datasets', () => {
+  const empty = decodeObjectPropList(u32(0));
+  assert.equal(empty.count, 0);
+  assert.deepEqual(empty.elements, []);
+
+  const element = propListElement(
+    7,
+    OBJECT_PROPERTY.NAME,
+    MTP_DATATYPE.UINT32,
+    u32(9),
+  );
+  const mismatched = decodeObjectPropList(concatBytes([u32(3), element]));
+  assert.equal(mismatched.count, 3);
+  assert.equal(mismatched.elements.length, 1);
+
+  const noElementBody = decodeObjectPropList(concatBytes([u32(1), u32(7)]));
+  assert.equal(noElementBody.elements.length, 0);
+
+  assert.throws(
+    () =>
+      decodeObjectPropList(
+        concatBytes([
+          u32(1),
+          propListElement(7, OBJECT_PROPERTY.NAME, MTP_DATATYPE.UINT32),
+        ]),
+      ),
+    RangeError,
+  );
+
+  assert.throws(
+    () =>
+      decodeObjectPropList(
+        propListPayload([propListElement(7, OBJECT_PROPERTY.NAME, 0x9999)]),
+      ),
+    /Unsupported MTP data type/,
+  );
+});
+
+test('getStorageIDs tolerates a count larger than the payload', async () => {
+  const stream = concatBytes([
+    response(OK, 0),
+    dataPacket(0x1004, 1, u32(3, 0x00010001, 0x00020002)),
+    response(OK, 1),
+  ]);
+  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
+  await mtp.ready;
+  await mtp.openSession();
+
+  assert.deepEqual(await mtp.getStorageIDs(), [0x00010001, 0x00020002]);
+});
+
+test('getStorageInfo reports read-only-with-delete and empty strings', async () => {
+  const payload = new Uint8Array(26);
+  const view = new DataView(payload.buffer);
+  view.setUint16(4, STORAGE_ACCESS.READ_ONLY_WITH_DELETE, true);
+
+  const stream = concatBytes([
+    response(OK, 0),
+    dataPacket(0x1005, 1, payload),
+    response(OK, 1),
+  ]);
+  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
+  await mtp.ready;
+  await mtp.openSession();
+
+  const info = await mtp.getStorageInfo(1);
+  assert.equal(info.readOnly, true);
+  assert.equal(info.description, '');
+  assert.equal(info.volumeLabel, '');
+});
+
+test('getStorageInfo rejects a short dataset', async () => {
+  const stream = concatBytes([
+    response(OK, 0),
+    dataPacket(0x1005, 1, new Uint8Array(25)),
+    response(OK, 1),
+  ]);
+  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
+  await mtp.ready;
+  await mtp.openSession();
+
+  await assert.rejects(() => mtp.getStorageInfo(1), /StorageInfo is too short/);
+});
+
+test('getObjectHandles sends storage, format and parent', async () => {
+  const stream = concatBytes([
+    response(OK, 0),
+    dataPacket(0x1007, 1, u32(0)),
+    response(OK, 1),
+  ]);
+  const device = new FakeDevice(stream);
+  const mtp = new Mtp(0x1234, 0x5678, device);
+  await mtp.ready;
+  await mtp.openSession();
+
+  assert.deepEqual(
+    await mtp.getObjectHandles(0x00010001, OBJECT_FORMAT.UNDEFINED, 42),
+    [],
+  );
+
+  const command = new DataView(
+    device.writes[1].bytes.buffer,
+    device.writes[1].bytes.byteOffset,
+    device.writes[1].bytes.byteLength,
+  );
+  assert.deepEqual(
+    [12, 16, 20].map(offset => command.getUint32(offset, true)),
+    [0x00010001, OBJECT_FORMAT.UNDEFINED, 42],
+  );
+});
+
+test('getNumObjects sends the storage, format and parent', async () => {
+  const stream = concatBytes([response(OK, 0), response(OK, 1, [0])]);
+  const device = new FakeDevice(stream);
+  const mtp = new Mtp(0x1234, 0x5678, device);
+  await mtp.ready;
+  await mtp.openSession();
+
+  assert.equal(await mtp.getNumObjects(0x00010001, 0, 42), 0);
+
+  const command = new DataView(
+    device.writes[1].bytes.buffer,
+    device.writes[1].bytes.byteOffset,
+    device.writes[1].bytes.byteLength,
+  );
+  assert.deepEqual(
+    [12, 16, 20].map(offset => command.getUint32(offset, true)),
+    [0x00010001, 0, 42],
+  );
+});
+
+test('getFileName sends GetObjectPropValue with the file-name code', async () => {
+  const stream = concatBytes([
+    response(OK, 0),
+    dataPacket(0x9803, 1, encodeMtpString('name.txt')),
+    response(OK, 1),
+  ]);
+  const device = new FakeDevice(stream);
+  const mtp = new Mtp(0x1234, 0x5678, device);
+  await mtp.ready;
+  await mtp.openSession();
+
+  assert.equal(await mtp.getFileName(9), 'name.txt');
+
+  const command = new DataView(
+    device.writes[1].bytes.buffer,
+    device.writes[1].bytes.byteOffset,
+    device.writes[1].bytes.byteLength,
+  );
+  assert.deepEqual(
+    [12, 16].map(offset => command.getUint32(offset, true)),
+    [9, OBJECT_PROPERTY.FILE_NAME],
+  );
+});
+
+test('getFile sends the object handle and returns the payload', async () => {
+  const payload = new Uint8Array([1, 2, 3]);
+  const stream = concatBytes([
+    response(OK, 0),
+    dataPacket(0x1009, 1, payload),
+    response(OK, 1),
+  ]);
+  const device = new FakeDevice(stream);
+  const mtp = new Mtp(0x1234, 0x5678, device);
+  await mtp.ready;
+  await mtp.openSession();
+
+  assert.deepEqual(await mtp.getFile(9), payload);
+
+  const command = new DataView(
+    device.writes[1].bytes.buffer,
+    device.writes[1].bytes.byteOffset,
+    device.writes[1].bytes.byteLength,
+  );
+  assert.equal(command.getUint32(12, true), 9);
+});
+
+test('deleteObject sends the object handle', async () => {
+  const stream = concatBytes([response(OK, 0), response(OK, 1)]);
+  const device = new FakeDevice(stream);
+  const mtp = new Mtp(0x1234, 0x5678, device);
+  await mtp.ready;
+  await mtp.openSession();
+
+  await mtp.deleteObject(9);
+
+  const command = new DataView(
+    device.writes[1].bytes.buffer,
+    device.writes[1].bytes.byteOffset,
+    device.writes[1].bytes.byteLength,
+  );
+  assert.equal(command.getUint32(12, true), 9);
+});
+
+test('openSession sends session ID 1 and starts at transaction 0', async () => {
+  const stream = concatBytes([response(OK, 0)]);
+  const device = new FakeDevice(stream);
+  const mtp = new Mtp(0x1234, 0x5678, device);
+  await mtp.ready;
+  await mtp.openSession();
+
+  const command = new DataView(
+    device.writes[0].bytes.buffer,
+    device.writes[0].bytes.byteOffset,
+    device.writes[0].bytes.byteLength,
+  );
+  assert.equal(command.getUint16(6, true), 0x1002);
+  assert.equal(command.getUint32(8, true), 0);
+  assert.equal(command.getUint32(12, true), 1);
+  assert.equal(mtp.transactionID, 1);
+});
+
+test('closeSession accepts SessionNotOpen', async () => {
+  const stream = concatBytes([response(OK, 0), response(0x2003, 1)]);
+  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
+  await mtp.ready;
+  await mtp.openSession();
+
+  await mtp.closeSession();
+  assert.equal(mtp.sessionOpen, false);
+});
+
+test('read rejects a header with a length below 12', async () => {
+  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(headerPacket(11)));
+  await mtp.ready;
+
+  await assert.rejects(() => mtp.read(), /Invalid MTP container length/);
+});
+
+test('readData rejects a response before the data phase', async () => {
+  const stream = concatBytes([response(OK, 0), response(OK, 1)]);
+  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
+  await mtp.ready;
+  await mtp.openSession();
+
+  await assert.rejects(
+    () => mtp.readData(),
+    /response before the expected data block/,
+  );
+});
+
+test('a wrong response transaction ID poisons the transport', async () => {
+  const stream = concatBytes([response(OK, 0), response(OK, 2)]);
+  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
+  await mtp.ready;
+  await mtp.openSession();
+
+  await assert.rejects(
+    () => mtp.closeSession(),
+    /Unexpected transaction ID 2 \(expected 1\)/,
+  );
+  await assert.rejects(() => mtp.getStorageIDs(), /transport is out of sync/);
+});
+
+test('write rejects a failed or stalled transfer', async () => {
+  const stream = concatBytes([response(OK, 0)]);
+  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
+  await mtp.ready;
+  await mtp.openSession();
+
+  mtp.device.transferOut = async () => ({ status: 'stall', bytesWritten: 0 });
+  await assert.rejects(() => mtp.write(new Uint8Array([1])), /status "stall"/);
+
+  mtp._transportHealthy = true;
+  mtp.device.transferOut = async () => ({ status: 'ok', bytesWritten: 0 });
+  await assert.rejects(() => mtp.write(new Uint8Array([1])), /stalled/);
+});
+
+test('sendObjectPropertyList sends the 64-bit size and zeroed handles', async () => {
+  const stream = concatBytes([response(OK, 0), response(OK, 1)]);
+  const device = new FakeDevice(stream);
+  const mtp = new Mtp(0x1234, 0x5678, device);
+  await mtp.ready;
+  await mtp.openSession();
+
+  await mtp.sendObjectPropertyList(
+    0x00010001,
+    0xffffffff,
+    OBJECT_FORMAT.UNDEFINED,
+    [
+      {
+        handle: 0x1234,
+        property: OBJECT_PROPERTY.FILE_NAME,
+        datatype: MTP_DATATYPE.STRING,
+        value: 'notes.txt',
+      },
+    ],
+    0x100000002,
+  );
+
+  const command = new DataView(
+    device.writes[1].bytes.buffer,
+    device.writes[1].bytes.byteOffset,
+    device.writes[1].bytes.byteLength,
+  );
+  assert.equal(command.getUint32(0, true), 32);
+  assert.equal(command.getUint16(6, true), 0x9808);
+  assert.deepEqual(
+    [12, 16, 20, 24, 28].map(offset => command.getUint32(offset, true)),
+    [0x00010001, 0xffffffff, OBJECT_FORMAT.UNDEFINED, 1, 2],
+  );
+
+  const list = decodeObjectPropList(device.writes[3].bytes);
+  assert.equal(list.elements[0].handle, 0);
+  assert.equal(list.elements[0].value, 'notes.txt');
+});
+
+test('sendObjectPropertyList rejects an out-of-range object size', async () => {
+  const stream = concatBytes([response(OK, 0)]);
+  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
+  await mtp.ready;
+  await mtp.openSession();
+
+  await assert.rejects(
+    () =>
+      mtp.sendObjectPropertyList(
+        1,
+        0xffffffff,
+        OBJECT_FORMAT.UNDEFINED,
+        [],
+        -1n,
+      ),
+    /unsigned 64-bit/,
+  );
+  await assert.rejects(
+    () =>
+      mtp.sendObjectPropertyList(
+        1,
+        0xffffffff,
+        OBJECT_FORMAT.UNDEFINED,
+        [],
+        0x10000000000000000n,
+      ),
+    /unsigned 64-bit/,
+  );
+});
+
+test('encodeObjectPropList rejects out-of-range 128-bit values', () => {
+  assert.throws(
+    () =>
+      encodeObjectPropList([
+        {
+          property: OBJECT_PROPERTY.NAME,
+          datatype: MTP_DATATYPE.UINT128,
+          value: 1n << 128n,
+        },
+      ]),
+    /UINT128 value is out of range/,
+  );
+  assert.throws(
+    () =>
+      encodeObjectPropList([
+        {
+          property: OBJECT_PROPERTY.NAME,
+          datatype: MTP_DATATYPE.INT128,
+          value: 1n << 127n,
+        },
+      ]),
+    /INT128 value is out of range/,
+  );
+});
+
+test('getStorageIDs returns an empty list for a short payload', async () => {
+  const stream = concatBytes([
+    response(OK, 0),
+    dataPacket(0x1004, 1, new Uint8Array([1, 0])),
+    response(OK, 1),
+  ]);
+  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
+  await mtp.ready;
+  await mtp.openSession();
+
+  assert.deepEqual(await mtp.getStorageIDs(), []);
+});
+
+test('getNumObjects returns zero when the response omits the count', async () => {
+  const stream = concatBytes([response(OK, 0), response(OK, 1)]);
+  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
+  await mtp.ready;
+  await mtp.openSession();
+
+  assert.equal(await mtp.getNumObjects(1), 0);
+});
+
+test('the response phase rejects a data block', async () => {
+  const stream = concatBytes([response(OK, 0), dataPacket(0x1007, 1, u32(0))]);
+  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
+  await mtp.ready;
+  await mtp.openSession();
+
+  await assert.rejects(
+    () => mtp.closeSession(),
+    /Expected a response block, received Data Block/,
+  );
+});
+
+test('transaction IDs wrap after the 32-bit limit', async () => {
+  const mtp = new Mtp(
+    0x1234,
+    0x5678,
+    new FakeDevice(concatBytes([response(OK, 0)])),
+  );
+  await mtp.ready;
+  mtp.transactionID = 0xffffffff;
+
+  const packet = mtp.buildContainerPacket({
+    type: COMMAND_BLOCK,
+    code: 0x1002,
+  });
+  assert.equal(new DataView(packet).getUint32(8, true), 0xffffffff);
+  assert.equal(mtp.transactionID, 0);
+});
+
+test('uploadFile splits a large payload at 64 KiB boundaries', async () => {
+  const stream = concatBytes([
+    response(OK, 0),
+    response(OK, 1, [0x00010001, 0xffffffff, 77]),
+    response(OK, 2),
+  ]);
+  const device = new FakeDevice(stream);
+  const mtp = new Mtp(0x1234, 0x5678, device);
+  await mtp.ready;
+  await mtp.openSession();
+
+  const data = new Uint8Array(64 * 1024 + 1);
+  data[data.byteLength - 1] = 0xab;
+
+  await mtp.uploadFile({
+    storageId: 0x00010001,
+    parentObjectHandle: 0xffffffff,
+    filename: 'large.bin',
+    data,
+  });
+
+  const sizes = device.writes.map(write => write.bytes.byteLength);
+  assert.ok(sizes.includes(64 * 1024));
+  assert.deepEqual(device.writes.at(-1).bytes, new Uint8Array([0xab]));
 });
