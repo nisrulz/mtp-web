@@ -6,6 +6,8 @@ Node.js or Electron. No drivers, no Android File Transfer, no ADB.
 Try the [browser demo](https://nisrulz.github.io/mtp-web/). It needs a Chromium
 browser and a phone in **File Transfer / MTP** mode.
 
+![Screenshot](img/scr.png)
+
 > This fork is maintained by [Nishant Srivastava](https://github.com/nisrulz).
 > The original project is [webmtp](https://github.com/tidepool-org/webmtp) by the
 > Tidepool Project.

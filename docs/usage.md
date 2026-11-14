@@ -258,8 +258,8 @@ const bytes = await mtp.getPartial(handle, offset, length);
 ```
 
 GetPartialObject64 devices disagree about the order of the offset words. The
-method tries `hiFirst` first. A `ParameterNotSupported` or `InvalidParameter`
-response retries with `loFirst`. The working order is cached in
+method tries `loFirst` first. A `ParameterNotSupported` or `InvalidParameter`
+response retries with `hiFirst`. The working order is cached in
 `mtp.partialOrder`. `mtp.partialState` is `unknown`, `supported` or
 `unsupported`. Pass `'hiFirst'` or `'loFirst'` to force the first attempt.
 

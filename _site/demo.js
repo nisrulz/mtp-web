@@ -179,7 +179,15 @@ const EVENT = {
   STORAGE_INFO_CHANGED: { value: 0x400c, name: 'StorageInfoChanged' },
   CAPTURE_COMPLETE: { value: 0x400d, name: 'CaptureComplete' },
   UNREPORTED_STATUS: { value: 0x400e, name: 'UnreportedStatus' },
-  OBJECT_PROP_CHANGED: { value: 0x400f, name: 'ObjectPropChanged' },
+  OBJECT_PROP_CHANGED: { value: 0xc801, name: 'ObjectPropChanged' },
+  OBJECT_PROP_DESC_CHANGED: {
+    value: 0xc802,
+    name: 'ObjectPropDescChanged',
+  },
+  OBJECT_REFERENCES_CHANGED: {
+    value: 0xc803,
+    name: 'ObjectReferencesChanged',
+  },
 };
 
 /** Event codes used by MTP event containers. */
@@ -221,12 +229,17 @@ const DEVICE_PROPERTY = {
   UPLOAD_URL: 0x501d,
   ARTIST: 0x501e,
   COPYRIGHT_INFO: 0x501f,
-  SYNCHRONIZATION_PARTNER: 0x5020,
-  DEVICE_FRIENDLY_NAME: 0x5021,
-  VOLUME: 0x5022,
-  SUPPORTED_FORMATS: 0x5023,
-  SUPPORTED_FORMAT_CATEGORIES: 0x5024,
-  SUPPORTED_FORMAT_PROPERTIES: 0x5025,
+  SYNCHRONIZATION_PARTNER: 0xd401,
+  DEVICE_FRIENDLY_NAME: 0xd402,
+  VOLUME: 0xd403,
+  SUPPORTED_FORMATS_ORDERED: 0xd404,
+  DEVICE_ICON: 0xd405,
+  SESSION_INITIATOR_VERSION_INFO: 0xd406,
+  PERCEIVED_DEVICE_TYPE: 0xd407,
+  PLAYBACK_RATE: 0xd410,
+  PLAYBACK_OBJECT: 0xd411,
+  PLAYBACK_CONTAINER_INDEX: 0xd412,
+  PLAYBACK_POSITION: 0xd413,
 };
 
 /** Property descriptor form flags. */
@@ -586,10 +599,13 @@ function readCountedArray(bytes, view, offset, width) {
   offset += 4;
 
   const available = Math.floor((bytes.byteLength - offset) / width);
-  const length = Math.min(count, available);
+  if (count > available) {
+    throw new RangeError('The DeviceInfo dataset is too short.');
+  }
+
   const values = [];
 
-  for (let index = 0; index < length; index += 1) {
+  for (let index = 0; index < count; index += 1) {
     values.push(
       width === 4
         ? view.getUint32(offset + index * 4, true)
@@ -597,7 +613,7 @@ function readCountedArray(bytes, view, offset, width) {
     );
   }
 
-  return { values, offset: offset + length * width };
+  return { values, offset: offset + count * width };
 }
 
 /**
@@ -633,11 +649,11 @@ function decodeDeviceInfo(input) {
   const functionalMode = view.getUint16(offset, true);
   offset += 2;
 
-  const operations = readCountedArray(bytes, view, offset, 4);
+  const operations = readCountedArray(bytes, view, offset, 2);
   offset = operations.offset;
-  const events = readCountedArray(bytes, view, offset, 4);
+  const events = readCountedArray(bytes, view, offset, 2);
   offset = events.offset;
-  const properties = readCountedArray(bytes, view, offset, 4);
+  const properties = readCountedArray(bytes, view, offset, 2);
   offset = properties.offset;
   const captureFormats = readCountedArray(bytes, view, offset, 2);
   offset = captureFormats.offset;
@@ -2189,7 +2205,9 @@ class Mtp extends EventTarget {
   /**
    * Read until the data phase of the current operation arrives. Event blocks
    * are ignored; an error response is turned into an exception instead of
-   * being silently skipped (which used to leave the stream out of sync).
+   * being silently skipped (which used to leave the stream out of sync). A
+   * device may answer OK without a data phase when the dataset is empty, so an
+   * OK response is returned to the caller as the whole result.
    */
   async readData(deadline = Date.now() + this.transferDeadlineMs, operation) {
     let eventBlocks = 0;
@@ -2208,12 +2226,7 @@ class Mtp extends EventTarget {
         if (container.codeValue !== CODE.OK.value) {
           throw new MtpResponseError(container, operation);
         }
-        this.transportHealthy = false;
-        throw new Error(
-          `Received a response before the expected data block${operationLabel(
-            operation,
-          )}.`,
-        );
+        return container;
       }
 
       this.transportHealthy = false;
@@ -2333,23 +2346,26 @@ class Mtp extends EventTarget {
     // Start the response deadline after the request and its data have gone out.
     // A large property list must not consume the time reserved for the reply.
     const deadline = Date.now() + this.transferDeadlineMs;
-    let data = null;
+    let received = null;
     if (expectData) {
-      data = await this.readData(deadline, container.code);
-      if (data.transactionID !== transactionID) {
+      received = await this.readData(deadline, container.code);
+      if (received.transactionID !== transactionID) {
         this.transportHealthy = false;
         throw new Error(
-          `Unexpected data-block transaction ID ${data.transactionID} ` +
-            `(expected ${transactionID}).`,
+          received.typeValue === DATA_BLOCK
+            ? `Unexpected data-block transaction ID ${received.transactionID} ` +
+                `(expected ${transactionID}).`
+            : `Unexpected transaction ID ${received.transactionID} ` +
+                `(expected ${transactionID}).`,
         );
       }
     }
 
-    const response = await this._readResponse(
-      transactionID,
-      deadline,
-      container.code,
-    );
+    const response =
+      received?.typeValue === RESPONSE_BLOCK
+        ? received
+        : await this._readResponse(transactionID, deadline, container.code);
+    const data = received?.typeValue === DATA_BLOCK ? received : null;
     this._log('debug', 'response', {
       code: response.code,
       codeValue: response.codeValue,
@@ -2379,14 +2395,14 @@ class Mtp extends EventTarget {
     const { data } = await this._execute(this._command(code, payload), {
       expectData: true,
     });
-    return data.payload;
+    return data ? data.payload : new ArrayBuffer(0);
   }
 
   async _executeForDataDirect(code, payload = []) {
     const { data } = await this._executeDirect(this._command(code, payload), {
       expectData: true,
     });
-    return data.payload;
+    return data ? data.payload : new ArrayBuffer(0);
   }
 
   async _executeForResponse(code, payload = [], options = {}) {
@@ -2711,7 +2727,7 @@ class Mtp extends EventTarget {
       return;
     }
 
-    await this._executeDirect(this._command(CODE.CLOSE_SESSION, [1]), {
+    await this._executeDirect(this._command(CODE.CLOSE_SESSION), {
       acceptCodes: [CODE.SESSION_NOT_OPEN.value],
     });
     this.sessionOpen = false;
@@ -2870,7 +2886,7 @@ class Mtp extends EventTarget {
       throw new TypeError('order must be "hiFirst" or "loFirst".');
     }
 
-    const firstOrder = order ?? this.partialOrder ?? 'hiFirst';
+    const firstOrder = order ?? this.partialOrder ?? 'loFirst';
     const secondOrder = firstOrder === 'hiFirst' ? 'loFirst' : 'hiFirst';
 
     try {
@@ -3787,6 +3803,10 @@ const refreshButton = document.querySelector('#refresh');
 const fileInput = document.querySelector('#file');
 const uploadButton = document.querySelector('#upload');
 const table = document.querySelector('#objects');
+const filesTable = document.querySelector('#files-table');
+const emptyState = document.querySelector('#empty-state');
+const emptyTitle = document.querySelector('#empty-title');
+const emptyDetail = document.querySelector('#empty-detail');
 const folderBackButton = document.querySelector('#folder-back');
 const folderPath = document.querySelector('#folder-path');
 const fileCount = document.querySelector('#file-count');
@@ -4025,27 +4045,15 @@ function itemCount(count) {
   return `${count} item${count === 1 ? '' : 's'}`;
 }
 
-function resetTable(
+function showEmptyState(
   title = 'No phone connected',
   detail = 'Connect your phone to browse its files.',
 ) {
   table.replaceChildren();
-  const row = document.createElement('tr');
-  const cell = document.createElement('td');
-  cell.colSpan = 3;
-  cell.className = 'empty';
-
-  const heading = document.createElement('p');
-  heading.className = 'empty-title';
-  heading.textContent = title;
-
-  const hint = document.createElement('p');
-  hint.className = 'empty-detail';
-  hint.textContent = detail;
-
-  cell.append(heading, hint);
-  row.append(cell);
-  table.append(row);
+  filesTable.hidden = true;
+  emptyState.hidden = false;
+  emptyTitle.textContent = title;
+  emptyDetail.textContent = detail;
 }
 
 function updateConnectionState() {
@@ -4074,7 +4082,7 @@ async function disconnect({ silent = false } = {}) {
   uploadButton.disabled = true;
   storageNote.textContent = '';
   storageValue.textContent = 'No storage found';
-  resetTable();
+  showEmptyState();
   setFileCount('No items', 'neutral');
   updateUploadState();
   connectButton.disabled = !usbSupported;
@@ -4357,7 +4365,7 @@ function addRow(object) {
 
 async function loadObjects() {
   if (selectedStorageId == null) {
-    resetTable(
+    showEmptyState(
       mtp ? 'No storage is available' : 'No phone connected',
       mtp
         ? 'Unlock your phone and allow file access.'
@@ -4367,7 +4375,7 @@ async function loadObjects() {
     return;
   }
 
-  resetTable('Loading files…', 'This can take a moment on a large folder.');
+  showEmptyState('Loading files…', 'This can take a moment on a large folder.');
   setFileCount('Loading…', 'warning');
 
   try {
@@ -4379,7 +4387,7 @@ async function loadObjects() {
     handles.sort((a, b) => b - a);
 
     if (handles.length === 0) {
-      resetTable(
+      showEmptyState(
         'This folder is empty',
         'Upload a file to add it to this folder.',
       );
@@ -4391,9 +4399,14 @@ async function loadObjects() {
     for (const handle of handles) {
       addRow(await mtp.getObjectInfo(handle));
     }
+    emptyState.hidden = true;
+    filesTable.hidden = false;
     setFileCount(itemCount(handles.length), 'success');
   } catch (error) {
-    resetTable('Could not load files', 'Try again or reconnect your phone.');
+    showEmptyState(
+      'Could not load files',
+      'Try again or reconnect your phone.',
+    );
     setFileCount('No items', 'neutral');
     throw error;
   }
@@ -4634,7 +4647,7 @@ updateFolderHeader();
 updateThemeToggle();
 updateConnectionState();
 updateUploadState();
-resetTable();
+showEmptyState();
 appendLog('info', 'Demo ready');
 
 if (!usbSupported) {

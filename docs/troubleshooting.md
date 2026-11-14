@@ -58,8 +58,8 @@ new one.
 
 ## Partial reads fail with `ParameterNotSupported` or `InvalidParameter`
 
-`getPartial()` tries the high offset word first. If the device rejects that
-order, the method retries once with the low word first. The working order is
+`getPartial()` tries the low offset word first. If the device rejects that
+order, the method retries once with the high word first. The working order is
 cached in `partialOrder`. `partialState` becomes `supported`.
 
 If both orders fail, `partialState` becomes `unsupported` and the method throws

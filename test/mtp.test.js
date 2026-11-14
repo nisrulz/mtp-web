@@ -10,6 +10,7 @@ import Mtp, {
   decodeObjectPropDesc,
   decodeObjectPropList,
   decodePropertyValueData,
+  DEVICE_PROPERTY,
   encodeMtpDate,
   encodeMtpString,
   encodeObjectInfo,
@@ -744,6 +745,26 @@ test('storage access capability values match the MTP spec', () => {
     READ_ONLY: 0x01,
     READ_ONLY_WITH_DELETE: 0x02,
   });
+});
+
+test('device property codes match the MTP 1.1 property table', () => {
+  assert.equal(DEVICE_PROPERTY.SYNCHRONIZATION_PARTNER, 0xd401);
+  assert.equal(DEVICE_PROPERTY.DEVICE_FRIENDLY_NAME, 0xd402);
+  assert.equal(DEVICE_PROPERTY.VOLUME, 0xd403);
+  assert.equal(DEVICE_PROPERTY.SUPPORTED_FORMATS_ORDERED, 0xd404);
+  assert.equal(DEVICE_PROPERTY.DEVICE_ICON, 0xd405);
+  assert.equal(DEVICE_PROPERTY.SESSION_INITIATOR_VERSION_INFO, 0xd406);
+  assert.equal(DEVICE_PROPERTY.PERCEIVED_DEVICE_TYPE, 0xd407);
+  assert.equal(DEVICE_PROPERTY.PLAYBACK_RATE, 0xd410);
+  assert.equal(DEVICE_PROPERTY.PLAYBACK_OBJECT, 0xd411);
+  assert.equal(DEVICE_PROPERTY.PLAYBACK_CONTAINER_INDEX, 0xd412);
+  assert.equal(DEVICE_PROPERTY.PLAYBACK_POSITION, 0xd413);
+});
+
+test('object property event codes match the MTP 1.1 event table', () => {
+  assert.equal(EVENT_CODE.OBJECT_PROP_CHANGED, 0xc801);
+  assert.equal(EVENT_CODE.OBJECT_PROP_DESC_CHANGED, 0xc802);
+  assert.equal(EVENT_CODE.OBJECT_REFERENCES_CHANGED, 0xc803);
 });
 
 test('getStorageInfo decodes capacities and strings', async () => {
@@ -1868,14 +1889,16 @@ test('openSession sends session ID 1 and starts at transaction 0', async () => {
   assert.equal(mtp.transactionID, 1);
 });
 
-test('closeSession accepts SessionNotOpen', async () => {
+test('closeSession sends no parameters and accepts SessionNotOpen', async () => {
   const stream = concatBytes([response(OK, 0), response(0x2003, 1)]);
-  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
+  const device = new FakeDevice(stream);
+  const mtp = new Mtp(0x1234, 0x5678, device);
   await mtp.ready;
   await mtp.openSession();
 
   await mtp.closeSession();
   assert.equal(mtp.sessionOpen, false);
+  assert.deepEqual(commandParameters(device, 1), []);
 });
 
 test('read rejects a header with a length below 12', async () => {
@@ -1885,16 +1908,16 @@ test('read rejects a header with a length below 12', async () => {
   await assert.rejects(() => mtp.read(), /Invalid MTP container length/);
 });
 
-test('readData rejects a response before the data phase', async () => {
+test('readData returns an OK response that replaces an empty data phase', async () => {
   const stream = concatBytes([response(OK, 0), response(OK, 1)]);
   const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
   await mtp.ready;
   await mtp.openSession();
 
-  await assert.rejects(
-    () => mtp.readData(),
-    /response before the expected data block/,
-  );
+  const container = await mtp.readData();
+  assert.equal(container.typeValue, RESPONSE_BLOCK);
+  assert.equal(container.codeValue, OK);
+  assert.equal(container.transactionID, 1);
 });
 
 test('a wrong response transaction ID poisons the transport', async () => {
@@ -2764,9 +2787,9 @@ function deviceInfoFixture() {
     u16Fixture(0x0064),
     encodeStringFixture('microsoft.com: 1.0'),
     u16Fixture(0x0001),
-    countU32Fixture([0x1001, 0x1002, 0x1009]),
-    countU32Fixture([0x4001]),
-    countU32Fixture([0x5001, 0x5002]),
+    countU16Fixture([0x1001, 0x1002, 0x1009]),
+    countU16Fixture([0x4001]),
+    countU16Fixture([0x5001, 0x5002]),
     countU16Fixture([0x3801]),
     countU16Fixture([0x3801, 0x3802]),
     encodeStringFixture('Samsung'),
@@ -2814,6 +2837,34 @@ test('decodeDeviceInfo rejects a dataset below the fixed fields', () => {
   assert.throws(() => decodeDeviceInfo(new Uint8Array(4)), RangeError);
 });
 
+function deviceInfoCountOffsets() {
+  const fixture = deviceInfoFixture();
+  const view = new DataView(
+    fixture.buffer,
+    fixture.byteOffset,
+    fixture.byteLength,
+  );
+  const description = encodeStringFixture('microsoft.com: 1.0').byteLength;
+  const offsets = [];
+  let offset = 2 + 4 + 2 + description + 2;
+
+  for (let index = 0; index < 5; index += 1) {
+    offsets.push(offset);
+    offset += 4 + view.getUint32(offset, true) * 2;
+  }
+
+  return offsets;
+}
+
+test('decodeDeviceInfo rejects an array count larger than the payload', () => {
+  for (const offset of deviceInfoCountOffsets()) {
+    const hostile = deviceInfoFixture().slice();
+    new DataView(hostile.buffer).setUint32(offset, 0xffffffff, true);
+
+    assert.throws(() => decodeDeviceInfo(hostile), RangeError);
+  }
+});
+
 test('getDeviceInfo works before openSession', async () => {
   const stream = concatBytes([
     dataPacket(0x1001, 0, deviceInfoFixture()),
@@ -2842,7 +2893,7 @@ test('getDeviceInfo works before openSession', async () => {
   assert.equal(mtp.sessionOpen, true);
 });
 
-test('getPartial sends the offset high word first by default', async () => {
+test('getPartial sends the offset low word first by default', async () => {
   const payload = Uint8Array.of(9, 8, 7);
   const stream = concatBytes([
     response(OK, 0),
@@ -2857,8 +2908,8 @@ test('getPartial sends the offset high word first by default', async () => {
   const bytes = await mtp.getPartial(0x42, 0x100000002, 3);
 
   assert.deepEqual(bytes, payload);
-  assert.deepEqual(commandParameters(device, 1), [0x42, 1, 2, 3]);
-  assert.equal(mtp.partialOrder, 'hiFirst');
+  assert.deepEqual(commandParameters(device, 1), [0x42, 2, 1, 3]);
+  assert.equal(mtp.partialOrder, 'loFirst');
   assert.equal(mtp.partialState, 'supported');
 });
 
@@ -2881,7 +2932,7 @@ test('getPartial rejects unsafe offsets and oversized lengths', async () => {
   );
 });
 
-test('getPartial retries with the low word first and caches the order', async () => {
+test('getPartial retries with the high word first and caches the order', async () => {
   const payload = Uint8Array.of(1, 2);
   const stream = concatBytes([
     response(OK, 0),
@@ -2897,13 +2948,13 @@ test('getPartial retries with the low word first and caches the order', async ()
   await mtp.openSession();
 
   assert.deepEqual(await mtp.getPartial(0x42, 0x100000002, 2), payload);
-  assert.deepEqual(commandParameters(device, 1), [0x42, 1, 2, 2]);
-  assert.deepEqual(commandParameters(device, 2), [0x42, 2, 1, 2]);
-  assert.equal(mtp.partialOrder, 'loFirst');
+  assert.deepEqual(commandParameters(device, 1), [0x42, 2, 1, 2]);
+  assert.deepEqual(commandParameters(device, 2), [0x42, 1, 2, 2]);
+  assert.equal(mtp.partialOrder, 'hiFirst');
   assert.equal(mtp.partialState, 'supported');
 
   assert.deepEqual(await mtp.getPartial(0x42, 6, 2), payload);
-  assert.deepEqual(commandParameters(device, 3), [0x42, 6, 0, 2]);
+  assert.deepEqual(commandParameters(device, 3), [0x42, 0, 6, 2]);
 });
 
 test('getPartial reports both orders as unsupported', async () => {
@@ -2925,8 +2976,8 @@ test('getPartial reports both orders as unsupported', async () => {
       error.transactionID === 2,
   );
 
-  assert.deepEqual(commandParameters(device, 1), [0x42, 1, 2, 3]);
-  assert.deepEqual(commandParameters(device, 2), [0x42, 2, 1, 3]);
+  assert.deepEqual(commandParameters(device, 1), [0x42, 2, 1, 3]);
+  assert.deepEqual(commandParameters(device, 2), [0x42, 1, 2, 3]);
   assert.equal(mtp.partialOrder, null);
   assert.equal(mtp.partialState, 'unsupported');
 });
@@ -2949,6 +3000,17 @@ test('getThumb returns bytes and accepts an empty payload', async () => {
   assert.deepEqual(await mtp.getThumb(7), new Uint8Array(0));
   assert.deepEqual(commandParameters(device, 1), [7]);
   assert.deepEqual(commandParameters(device, 2), [7]);
+});
+
+test('getThumb returns an empty array when the device sends no data phase', async () => {
+  const stream = concatBytes([response(OK, 0), response(OK, 1)]);
+  const device = new FakeDevice(stream);
+  const mtp = new Mtp(0x1234, 0x5678, device);
+  await mtp.ready;
+  await mtp.openSession();
+
+  assert.deepEqual(await mtp.getThumb(7), new Uint8Array(0));
+  assert.deepEqual(commandParameters(device, 1), [7]);
 });
 
 test('streaming upload writes chunks in order and reports progress', async () => {

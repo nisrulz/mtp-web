@@ -217,7 +217,13 @@
           </div>
 
           <div class="table-wrap">
-            <table>
+            <div id="empty-state" class="empty-state">
+              <p id="empty-title" class="empty-title">No phone connected</p>
+              <p id="empty-detail" class="empty-detail">
+                Connect your phone to browse its files.
+              </p>
+            </div>
+            <table id="files-table" hidden>
               <thead>
                 <tr>
                   <th scope="col">Name</th>
@@ -225,16 +231,7 @@
                   <th scope="col">Actions</th>
                 </tr>
               </thead>
-              <tbody id="objects">
-                <tr>
-                  <td colspan="3" class="empty">
-                    <p class="empty-title">No phone connected</p>
-                    <p class="empty-detail">
-                      Connect your phone to browse its files.
-                    </p>
-                  </td>
-                </tr>
-              </tbody>
+              <tbody id="objects"></tbody>
             </table>
           </div>
         </section>
