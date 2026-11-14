@@ -5,9 +5,9 @@ NPX ?= npx --no-install
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install test lint lint-fix format format-check typecheck check \
-	audit e2e manual-test demo-bundle demo-bundle-check pages pack publish \
-	rebuild
+.PHONY: help install test lint lint-fix format format-check typecheck \
+	typecheck-types check audit e2e manual-test demo-bundle demo-bundle-check \
+	pages pack publish release release-dry-run rebuild
 
 help: ## List the available targets
 	@awk 'BEGIN {FS = ":.*## "}; /^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -16,7 +16,7 @@ install: ## Install the Node.js dependencies
 	yarn install --frozen-lockfile
 
 test: ## Run the unit tests
-	$(NODE) --test test/mtp.test.js test/usb.test.js
+	$(NODE) --test test/mtp.test.js test/usb.test.js test/browser.test.js
 
 lint: ## Check the code with ESLint
 	$(NPX) eslint .
@@ -33,7 +33,10 @@ format-check: ## Check the formatting
 typecheck: ## Type-check the JavaScript with the JSDoc types
 	$(NPX) tsc -p tsconfig.json
 
-check: format-check lint typecheck demo-bundle-check test ## Run every automated check
+typecheck-types: ## Type-check the TypeScript consumer fixture
+	$(NPX) tsc -p tsconfig.types.json
+
+check: format-check lint typecheck typecheck-types demo-bundle-check test ## Run every automated check
 
 audit: ## Check the dependencies for known vulnerabilities
 	yarn audit --level high
@@ -60,6 +63,12 @@ pack: ## Inspect the npm tarball
 
 publish: check ## Publish the package to npm
 	npm publish --access public
+
+release: ## Release VERSION=x.y.z and publish to npm
+	@VERSION="$(VERSION)" DRY_RUN="$(DRY_RUN)" bash scripts/release.sh
+
+release-dry-run: ## Preview the release steps for VERSION=x.y.z
+	@VERSION="$(VERSION)" DRY_RUN=1 bash scripts/release.sh
 
 rebuild: ## Rebuild the usb native module
 	npm rebuild usb
