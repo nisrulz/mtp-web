@@ -4,7 +4,9 @@
 devices. It does not rename or move them.
 
 The reader loads one complete object into memory as a `Uint8Array`. The writer
-takes the whole file as one buffer. Large objects need that much free memory.
+accepts a whole buffer or an `AsyncIterable` of chunks. A whole-buffer upload
+needs that much free memory. A streaming upload needs the declared size and
+sends each chunk as it arrives.
 
 ## Device trust
 
@@ -98,12 +100,13 @@ and product ID. Or run the process as a user that can open the device node.
 
 ## Electron
 
-Electron reports a browser user agent that contains `Electron/`. Thus `mtp-web`
-uses the `usb` package and not `navigator.usb`. The same code works in the main
-process and in a renderer with Node integration.
+Use the Node entry in the main process. It loads the `usb` package. The same
+code works in a renderer with Node integration.
 
 If you use a sandboxed renderer without Node integration, pass a `USBDevice`
-object from the renderer. Or forward the calls to the main process.
+object from the renderer. Or forward the calls to the main process. A renderer
+build that honors the browser condition resolves the browser entry and uses
+`navigator.usb`.
 
 ## Upload and delete
 
@@ -130,6 +133,20 @@ const handle = await mtp.uploadFile({
   parentObjectHandle: 0xffffffff,
   filename: file.name,
   data,
+});
+```
+
+For a large file, stream the chunks and declare the total size:
+
+```javascript
+await mtp.uploadFile({
+  storageId,
+  parentObjectHandle: 0xffffffff,
+  filename: file.name,
+  data: file.stream(), // AsyncIterable<Uint8Array>
+  size: file.size,
+  onProgress: sent => console.log(sent),
+  signal: controller.signal,
 });
 ```
 
