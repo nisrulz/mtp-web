@@ -1,0 +1,11 @@
+mtp-web
+Copyright (c) 2026, Nishant Srivastava
+
+This software is a fork of webmtp:
+https://github.com/tidepool-org/webmtp
+
+Original copyright (c) 2020, Tidepool Project.
+Licensed under the BSD 2-Clause License. See LICENSE.
+
+The original copyright notice, conditions, and disclaimer apply to the
+original code. Modifications in this fork are recorded in the git history.

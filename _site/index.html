@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Browse, download, upload and delete files on your Android phone from the browser."
+    />
+    <title>mtp-web · Phone file browser</title>
+    <script>
+      (() => {
+        let stored = null;
+        try {
+          stored = localStorage.getItem('mtp-web-theme');
+        } catch {
+          // Storage can be unavailable for local files.
+        }
+        const theme =
+          stored === 'light' || stored === 'dark'
+            ? stored
+            : matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark'
+              : 'light';
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+    <link rel="icon" href="img/logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="hero">
+        <div class="hero-copy">
+          <div class="brand">
+            <img
+              class="brand-logo"
+              src="img/logo.svg"
+              alt=""
+              width="44"
+              height="44"
+            />
+            <p class="eyebrow">mtp-web</p>
+          </div>
+          <h1>Browse your phone</h1>
+          <p class="lede">
+            Connect your Android phone to browse, download, upload and delete
+            files from this page.
+          </p>
+        </div>
+        <div class="hero-meta">
+          <button
+            id="theme-toggle"
+            class="button icon-button theme-toggle"
+            type="button"
+            aria-label="Switch to dark theme"
+            title="Switch to dark theme"
+          ></button>
+          <p class="hint">
+            Open this page in Chrome or Edge, then select your phone in the
+            browser prompt.
+          </p>
+          <p class="hero-links">
+            <a href="https://github.com/nisrulz/mtp-web">mtp-web on GitHub</a>
+            <span aria-hidden="true">·</span>
+            <a
+              href="https://github.com/nisrulz/mtp-web/blob/master/docs/usage.md"
+            >
+              Usage guide
+            </a>
+          </p>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <section
+          class="card connection-pane"
+          aria-labelledby="connection-heading"
+        >
+          <div class="card-header">
+            <h2 id="connection-heading">Connect your phone</h2>
+            <span id="status" class="status" role="status" aria-live="polite">
+              Phone not connected
+            </span>
+          </div>
+
+          <div class="toolbar">
+            <button id="connect" class="button primary" type="button">
+              Connect phone
+            </button>
+            <button
+              id="disconnect"
+              class="button icon-button"
+              type="button"
+              aria-label="Disconnect phone"
+              title="Disconnect phone"
+              disabled
+            ></button>
+            <p class="hint">
+              Select your phone in the browser prompt and allow access.
+            </p>
+          </div>
+
+          <div class="toolbar">
+            <p class="hint">
+              Unlock your phone, choose <strong>File Transfer / MTP</strong>,
+              and close other apps that use your phone. Your files stay on your
+              device; this page does not send them to a server.
+            </p>
+          </div>
+
+          <div class="toolbar">
+            <label id="storage-label" for="storage-button">Storage</label>
+            <div class="storage-picker">
+              <button
+                id="storage-button"
+                class="select-button"
+                type="button"
+                aria-haspopup="listbox"
+                aria-expanded="false"
+                aria-controls="storage-menu"
+                aria-labelledby="storage-label storage-value"
+                disabled
+              >
+                <span id="storage-value">No storage found</span>
+                <svg
+                  class="select-chevron"
+                  viewBox="0 0 20 20"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="m5 8 5 5 5-5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
+              <ul
+                id="storage-menu"
+                class="select-menu"
+                role="listbox"
+                aria-labelledby="storage-label"
+                hidden
+              ></ul>
+            </div>
+            <button
+              id="refresh"
+              class="button icon-button"
+              type="button"
+              aria-label="Refresh files"
+              title="Refresh files"
+              disabled
+            ></button>
+            <p id="storage-note" class="hint" role="status"></p>
+          </div>
+
+          <div class="toolbar">
+            <input type="file" id="file" hidden />
+            <button id="upload" class="button primary" type="button" disabled>
+              Upload file
+            </button>
+          </div>
+        </section>
+
+        <section class="card objects-pane" aria-labelledby="objects-heading">
+          <div class="card-header">
+            <div class="folder-heading">
+              <button
+                id="folder-back"
+                class="button small icon-button"
+                type="button"
+                aria-label="Go back one folder"
+                title="Go back one folder"
+                disabled
+              ></button>
+              <div>
+                <h2 id="objects-heading">Files</h2>
+                <p id="folder-path" class="hint">Storage root</p>
+              </div>
+            </div>
+            <div class="files-meta">
+              <span
+                id="file-count"
+                class="status"
+                role="status"
+                aria-live="polite"
+              >
+                No items
+              </span>
+              <p class="hint">Newest first</p>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Name</th>
+                  <th scope="col">Size</th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="objects">
+                <tr>
+                  <td colspan="3" class="empty">
+                    Connect your phone to see its files.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <div
+      id="notice"
+      class="notice"
+      role="status"
+      aria-live="polite"
+      hidden
+    ></div>
+
+    <script src="demo.js"></script>
+  </body>
+</html>
