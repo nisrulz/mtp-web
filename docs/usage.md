@@ -1,7 +1,7 @@
 # Usage
 
-`mtp-web` reads, uploads and deletes objects (files and folders) on MTP
-devices. It does not rename or move them.
+`mtp-web` reads, uploads, deletes, moves and copies objects (files and folders)
+on MTP devices. It does not provide a standalone rename command.
 
 The reader loads one complete object into memory as a `Uint8Array`. The writer
 accepts a whole buffer or an `AsyncIterable` of chunks. A whole-buffer upload
@@ -45,6 +45,20 @@ Two rules apply:
    `http://192.168.x.x` is not a secure context.
 2. Start `usb.requestDevice()` from a user gesture, for example a click. A page
    load cannot open the device picker.
+
+Check support before you connect:
+
+```javascript
+import { isSupported } from 'mtp-web';
+
+if (!isSupported()) {
+  throw new Error('Use Chrome or Edge on a desktop computer.');
+}
+```
+
+`isSupported()` returns false in Firefox and Safari, even when a WebUSB shim is
+present. It also returns false when `navigator.usb.requestDevice` or
+`navigator.usb.getDevices` is missing. `Mtp.isSupported()` runs the same check.
 
 ```javascript
 import Mtp from 'mtp-web';
@@ -159,6 +173,40 @@ await mtp.deleteObject(handle);
 `deleteObject()` removes the object immediately. There is no undo and no trash.
 Ask the user before you delete.
 
+The upload sends the data-container header and the first payload bytes in one
+USB transfer. It uses 512-byte OUT chunks by default. Set `writeChunkSize` to
+change the chunk size. Some devices need a zero-length packet at an aligned
+boundary; set `sendZeroLengthPacket: true` for those devices.
+
+If the folder already contains the file name, the device rejects
+`SendObjectInfo` with `GeneralError`. `uploadFile()` retries with
+`name (2).ext`, then `name (3).ext`, up to 10 names. The returned object handle
+is the new file. Call `getObjectInfo(handle)` to read the final file name.
+
+An upload cannot stop cleanly after the data phase starts. An abort before the
+data phase throws `AbortError`. An abort after that point also marks the
+transport unhealthy.
+
+Property lists read or write many metadata fields in one command.
+
+A read-only storage rejects an upload with `StoreReadOnly`. A full storage
+rejects it with `StoreFull`. Both errors arrive as `MtpResponseError`.
+
+## Properties
+
+`getObjectProperty()` reads the descriptor and the value. Use it when you do
+not know the data type.
+
+```javascript
+const { descriptor, value } = await mtp.getObjectProperty(
+  handle,
+  0xdc04, // object size
+);
+console.log(descriptor.dataType, value);
+
+await mtp.setObjectProperty(handle, 0xdc04, 2048);
+```
+
 Property lists read or write many metadata fields in one command:
 
 ```javascript
@@ -168,8 +216,119 @@ const size = elements.find(
 )?.value;
 ```
 
-A read-only storage rejects an upload with `StoreReadOnly`. A full storage
-rejects it with `StoreFull`. Both errors arrive as `MtpResponseError`.
+Device properties use the same pattern:
+
+```javascript
+const { value: battery } = await mtp.getDeviceProperty(0x5001);
+```
+
+`getObjectPropsSupported(format)` lists the object properties for a format.
+`getObjectPropDesc()` and `getDevicePropDesc()` return the full descriptor.
+`setObjectPropertyList()` writes several values in one command.
+
+## Move, copy and references
+
+```javascript
+await mtp.moveObject(handle, storageId, 0); // 0 is the storage root
+await mtp.copyObject(handle, storageId, folderHandle);
+
+const referenced = await mtp.getObjectReferences(handle);
+await mtp.setObjectReferences(handle, [...referenced, otherHandle]);
+```
+
+## Device information
+
+`getDeviceInfo()` works before `openSession()`.
+
+```javascript
+const info = await mtp.getDeviceInfo();
+console.log(info.Manufacturer, info.Model, info.SerialNumber);
+```
+
+The fields follow the PTP names: `StandardVersion`, `VendorExtensionID`,
+`VendorExtensionVersion`, `VendorExtensionDescription`, `FunctionalMode`,
+`OperationsSupported`, `EventsSupported`, `DevicePropertiesSupported`,
+`CaptureFormats`, `ImageFormats`, `Manufacturer`, `Model`, `DeviceVersion` and
+`SerialNumber`.
+
+## Partial reads and thumbnails
+
+```javascript
+const bytes = await mtp.getPartial(handle, offset, length);
+```
+
+GetPartialObject64 devices disagree about the order of the offset words. The
+method tries `hiFirst` first. A `ParameterNotSupported` or `InvalidParameter`
+response retries with `loFirst`. The working order is cached in
+`mtp.partialOrder`. `mtp.partialState` is `unknown`, `supported` or
+`unsupported`. Pass `'hiFirst'` or `'loFirst'` to force the first attempt.
+
+The method throws if both orders fail. It does not fall back to `getFile()`.
+
+`getThumb(handle)` returns a `Uint8Array`. A zero-byte result is valid and
+returns an empty array.
+
+## Transport health and recovery
+
+```javascript
+if (!mtp.isTransportHealthy()) {
+  await mtp.recover(); // The same USBDevice must still be connected.
+}
+```
+
+`transportHealthy` starts as `true`. A USB timeout or error, an unexpected USB
+status, a malformed container, or a transaction ID mismatch sets it to `false`.
+After that, every command rejects with the transport-out-of-sync error.
+
+Call `recover()` to reopen the USB transport and start a new session. Create a
+new `Mtp` instance when the device was disconnected. If a bulk transfer stalls
+and the phone no longer accepts data, call `resetUsbDevice()`, unplug the cable
+and reconnect the phone.
+
+## Events
+
+```javascript
+const event = await mtp.readEvent();
+console.log(event.code, event.parameters);
+```
+
+The device sends events at any time. `readEvent()` returns one event container.
+A timeout marks the transport unhealthy because WebUSB cannot cancel a pending
+read. Call `recover()` after a timeout.
+
+## Logging
+
+The library logs at `silent`, `error`, `warn`, `info` or `debug`. The default is
+`silent`, so logging is off until you enable it.
+
+```javascript
+const mtp = new Mtp(vendorId, productId, device, {
+  logLevel: 'debug',
+  logger: {
+    debug: (message, context) => console.debug(message, context),
+    info: (message, context) => console.info(message, context),
+    warn: (message, context) => console.warn(message, context),
+    error: (message, context) => console.error(message, context),
+  },
+});
+
+mtp.setLogLevel('info');
+console.log(mtp.getLogLevel());
+```
+
+A custom logger can omit a level. The library then stays silent at that level.
+Use `debug` to see USB writes, MTP commands and responses.
+
+## TypeScript
+
+The package includes hand-written declarations for the class, options, events,
+results and helpers. The declarations cover `DeviceInfo`, `PartialOrder`,
+`PartialState`, `UploadOptions`, `DevicePropDesc`, `ObjectPropDesc`,
+`PropertyForm` and the upload result.
+
+```typescript
+import Mtp, { type DeviceInfo, type UploadOptions } from 'mtp-web';
+```
 
 ## Find the vendor and product IDs
 
