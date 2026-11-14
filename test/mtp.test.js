@@ -2891,7 +2891,7 @@ test('getDeviceInfo works before openSession', async () => {
   assert.equal(mtp.sessionOpen, true);
 });
 
-test('getPartial sends the offset high word first by default', async () => {
+test('getPartial sends the offset low word first by default', async () => {
   const payload = Uint8Array.of(9, 8, 7);
   const stream = concatBytes([
     response(OK, 0),
@@ -2906,8 +2906,8 @@ test('getPartial sends the offset high word first by default', async () => {
   const bytes = await mtp.getPartial(0x42, 0x100000002, 3);
 
   assert.deepEqual(bytes, payload);
-  assert.deepEqual(commandParameters(device, 1), [0x42, 1, 2, 3]);
-  assert.equal(mtp.partialOrder, 'hiFirst');
+  assert.deepEqual(commandParameters(device, 1), [0x42, 2, 1, 3]);
+  assert.equal(mtp.partialOrder, 'loFirst');
   assert.equal(mtp.partialState, 'supported');
 });
 
@@ -2930,7 +2930,7 @@ test('getPartial rejects unsafe offsets and oversized lengths', async () => {
   );
 });
 
-test('getPartial retries with the low word first and caches the order', async () => {
+test('getPartial retries with the high word first and caches the order', async () => {
   const payload = Uint8Array.of(1, 2);
   const stream = concatBytes([
     response(OK, 0),
@@ -2946,13 +2946,13 @@ test('getPartial retries with the low word first and caches the order', async ()
   await mtp.openSession();
 
   assert.deepEqual(await mtp.getPartial(0x42, 0x100000002, 2), payload);
-  assert.deepEqual(commandParameters(device, 1), [0x42, 1, 2, 2]);
-  assert.deepEqual(commandParameters(device, 2), [0x42, 2, 1, 2]);
-  assert.equal(mtp.partialOrder, 'loFirst');
+  assert.deepEqual(commandParameters(device, 1), [0x42, 2, 1, 2]);
+  assert.deepEqual(commandParameters(device, 2), [0x42, 1, 2, 2]);
+  assert.equal(mtp.partialOrder, 'hiFirst');
   assert.equal(mtp.partialState, 'supported');
 
   assert.deepEqual(await mtp.getPartial(0x42, 6, 2), payload);
-  assert.deepEqual(commandParameters(device, 3), [0x42, 6, 0, 2]);
+  assert.deepEqual(commandParameters(device, 3), [0x42, 0, 6, 2]);
 });
 
 test('getPartial reports both orders as unsupported', async () => {
@@ -2974,8 +2974,8 @@ test('getPartial reports both orders as unsupported', async () => {
       error.transactionID === 2,
   );
 
-  assert.deepEqual(commandParameters(device, 1), [0x42, 1, 2, 3]);
-  assert.deepEqual(commandParameters(device, 2), [0x42, 2, 1, 3]);
+  assert.deepEqual(commandParameters(device, 1), [0x42, 2, 1, 3]);
+  assert.deepEqual(commandParameters(device, 2), [0x42, 1, 2, 3]);
   assert.equal(mtp.partialOrder, null);
   assert.equal(mtp.partialState, 'unsupported');
 });

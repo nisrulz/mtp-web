@@ -2882,7 +2882,7 @@ export default class Mtp extends EventTarget {
       throw new TypeError('order must be "hiFirst" or "loFirst".');
     }
 
-    const firstOrder = order ?? this.partialOrder ?? 'hiFirst';
+    const firstOrder = order ?? this.partialOrder ?? 'loFirst';
     const secondOrder = firstOrder === 'hiFirst' ? 'loFirst' : 'hiFirst';
 
     try {

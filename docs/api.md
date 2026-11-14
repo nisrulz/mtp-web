@@ -260,7 +260,7 @@ thumbnail is valid and returns an empty array.
 Returns `Promise<Uint8Array>`: part of one object with GetPartialObject64. The
 `offset` is a non-negative safe integer and is split into high and low 32-bit
 words. `length` must fit in an unsigned 32-bit value. `order` is `'hiFirst'` or
-`'loFirst'`. The method uses the cached order, then `'hiFirst'`.
+`'loFirst'`. The method uses the cached order, then `'loFirst'`.
 
 A `ParameterNotSupported` or `InvalidParameter` response retries one time with
 the other order. The working order is cached in `partialOrder` and
