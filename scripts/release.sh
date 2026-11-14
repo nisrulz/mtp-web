@@ -11,11 +11,14 @@ Usage:
 
 Steps:
   1. Switch to the default branch and update it.
-  2. Run the checks.
-  3. Set the version in package.json.
-  4. Commit the change and tag the commit.
-  5. Push the commit and the tag to GitHub.
+  2. Verify that package.json already has the requested version.
+  3. Run the checks.
+  4. Tag the current commit.
+  5. Push the tag to GitHub.
   6. Publish the package to npm.
+
+The version bump happens in a pull request. Merge the pull request before you
+run this script.
 
 Options:
   --dry-run   Print the steps. Do not run them.
@@ -93,61 +96,6 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 package_name="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).name")"
-current_version="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
-
-if ! node -e '
-  const parse = value => {
-    const [core, build] = value.split("+");
-    const [main, pre] = core.split("-");
-
-    return {
-      build: build ?? "",
-      main: main.split(".").map(Number),
-      pre: pre ? pre.split(".") : [],
-    };
-  };
-
-  const compare = (left, right) => {
-    for (let index = 0; index < 3; index += 1) {
-      if (left.main[index] !== right.main[index]) {
-        return left.main[index] > right.main[index] ? 1 : -1;
-      }
-    }
-
-    if (left.pre.length === 0 && right.pre.length === 0) return 0;
-    if (left.pre.length === 0) return 1;
-    if (right.pre.length === 0) return -1;
-
-    for (let index = 0; index < Math.max(left.pre.length, right.pre.length); index += 1) {
-      const first = left.pre[index];
-      const second = right.pre[index];
-
-      if (first === undefined) return -1;
-      if (second === undefined) return 1;
-
-      const firstIsNumber = /^[0-9]+$/.test(first);
-      const secondIsNumber = /^[0-9]+$/.test(second);
-
-      if (firstIsNumber && secondIsNumber) {
-        if (Number(first) !== Number(second)) {
-          return Number(first) > Number(second) ? 1 : -1;
-        }
-      } else if (firstIsNumber) {
-        return -1;
-      } else if (secondIsNumber) {
-        return 1;
-      } else if (first !== second) {
-        return first > second ? 1 : -1;
-      }
-    }
-
-    return 0;
-  };
-
-  process.exit(compare(parse(process.argv[1]), parse(process.argv[2])) > 0 ? 0 : 1);
-' "$version" "$current_version"; then
-  fail "version $version is not greater than $current_version"
-fi
 
 info "Fetch the tags and the default branch"
 run git fetch origin --prune --tags
@@ -158,6 +106,15 @@ default_branch="${default_branch:-master}"
 
 git show-ref --verify --quiet "refs/remotes/origin/$default_branch" ||
   fail "the default branch origin/$default_branch does not exist"
+
+branch_version="$(
+  git show "origin/$default_branch:package.json" |
+    node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version'
+)"
+
+if [[ "$version" != "$branch_version" ]]; then
+  fail "origin/$default_branch has version $branch_version. Bump package.json in a pull request and merge it before you tag $version."
+fi
 
 if git show-ref --verify --quiet "refs/tags/v$version"; then
   fail "the tag v$version already exists"
@@ -194,18 +151,20 @@ run git pull --ff-only origin "$default_branch"
 info "Run the checks"
 run make check
 
-info "Set the version in package.json"
-run npm version "$version" --no-git-tag-version
+info "Verify the default branch matches origin"
+if [[ "$dry_run" != "1" ]]; then
+  local_head="$(git rev-parse HEAD)"
+  remote_head="$(git rev-parse "origin/$default_branch")"
+  if [[ "$local_head" != "$remote_head" ]]; then
+    fail "$default_branch has commits that are not on origin/$default_branch. Push or remove them before you tag."
+  fi
+fi
 
-info "Commit the version"
-run git add package.json
-run git commit -m "chore: release v$version"
-
-info "Tag the commit"
+info "Tag the current commit"
 run git tag -a "v$version" -m "v$version"
 
-info "Push the commit and the tag to GitHub"
-run git push origin "$default_branch" "v$version"
+info "Push the tag to GitHub"
+run git push origin "v$version"
 
 info "Publish the package to npm"
 run npm publish --access public

@@ -145,29 +145,30 @@ permission.
 
 ## Publishing
 
+Bump `version` in a pull request. Merge the pull request into the default
+branch. Then create the tag from that merged commit.
+
 The release script does these steps:
 
 1. It switches to the default branch and updates it.
-2. It runs `make check`.
-3. It sets the version in `package.json`.
-4. It commits the change and tags the commit.
-5. It pushes the commit and the tag to GitHub.
-6. It publishes the package to npm.
-
-```bash
-make release VERSION=0.2.0
-```
-
-The version must be greater than the version in `package.json`. The working
-tree must have no changes. The `npm` account must be authenticated. The script
-stops when a check fails, when the tag exists or when the version is already
-published.
-
-Use the dry-run target to show the steps without a change:
+2. It verifies that `package.json` on the default branch has the requested
+   version.
+3. It runs `make check`.
+4. It verifies that the local default branch matches the remote branch.
+5. It tags the current commit.
+6. It pushes the tag to GitHub.
+7. It publishes the package to npm.
 
 ```bash
 make release-dry-run VERSION=0.2.0
+make release VERSION=0.2.0
 ```
+
+The version must equal the version in `package.json` on the default branch. The
+script does not bump the version. The working tree must have no changes. The
+`npm` account must be authenticated. The script stops when a check fails, when
+the tag exists, when the version is not yet merged, or when the version is
+already published.
 
 A dry run does not run the checks. It does not change the repository. It does
 not publish the package.

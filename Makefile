@@ -64,7 +64,7 @@ pack: ## Inspect the npm tarball
 publish: check ## Publish the package to npm
 	npm publish --access public
 
-release: ## Release VERSION=x.y.z and publish to npm
+release: ## Tag VERSION=x.y.z on the default branch and publish
 	@VERSION="$(VERSION)" DRY_RUN="$(DRY_RUN)" bash scripts/release.sh
 
 release-dry-run: ## Preview the release steps for VERSION=x.y.z
