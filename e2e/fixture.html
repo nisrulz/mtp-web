@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>mtp-web E2E</title>
+  </head>
+  <body>
+    <h1>mtp-web E2E</h1>
+    <p>
+      <button id="connect" type="button">Connect</button>
+      <span id="status">Not connected</span>
+    </p>
+
+    <script type="module">
+      import Mtp from '/src/mtp.js';
+
+      const status = document.querySelector('#status');
+      const config = { vendorId: 0x04e8, productId: null };
+      const state = { status: 'idle', error: null, device: null };
+      let mtp = null;
+
+      function setStatus(text) {
+        status.textContent = text;
+      }
+
+      function serialize(value) {
+        if (typeof value === 'bigint') return value.toString();
+        if (Array.isArray(value)) return value.map(serialize);
+        if (value && typeof value === 'object') {
+          return Object.fromEntries(
+            Object.entries(value).map(([key, entry]) => [
+              key,
+              serialize(entry),
+            ]),
+          );
+        }
+        return value;
+      }
+
+      function bytesToBase64(bytes) {
+        let binary = '';
+        const chunkSize = 0x8000;
+
+        for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+          binary += String.fromCharCode(
+            ...bytes.subarray(offset, offset + chunkSize),
+          );
+        }
+
+        return btoa(binary);
+      }
+
+      function base64ToBytes(value) {
+        const binary = atob(value);
+        const bytes = new Uint8Array(binary.length);
+
+        for (let index = 0; index < binary.length; index += 1) {
+          bytes[index] = binary.charCodeAt(index);
+        }
+
+        return bytes;
+      }
+
+      function requireMtp() {
+        if (!mtp) {
+          throw new Error('The MTP device is not connected.');
+        }
+        return mtp;
+      }
+
+      async function connect() {
+        state.status = 'requesting';
+        state.error = null;
+        setStatus('Choose the device in the browser prompt.');
+
+        const filter = { vendorId: config.vendorId };
+        if (config.productId != null) {
+          filter.productId = config.productId;
+        }
+
+        const device = await navigator.usb.requestDevice({ filters: [filter] });
+        state.device = {
+          vendorId: device.vendorId,
+          productId: device.productId,
+          productName: device.productName,
+        };
+
+        state.status = 'opening';
+        setStatus(`Opening ${device.productName || 'the device'}.`);
+
+        mtp = new Mtp(null, null, device);
+        mtp.addEventListener('error', event => {
+          state.error = event.error?.message ?? String(event);
+        });
+
+        await mtp.ready;
+        await mtp.openSession();
+
+        state.status = 'connected';
+        setStatus(`Connected to ${device.productName || 'the device'}.`);
+      }
+
+      document.querySelector('#connect').addEventListener('click', () => {
+        connect().catch(error => {
+          state.status = 'failed';
+          state.error = error.message;
+          setStatus(`Connect failed: ${error.message}`);
+        });
+      });
+
+      window.e2e = {
+        state,
+        configure(options) {
+          Object.assign(config, options);
+        },
+        async storages() {
+          const ids = await requireMtp().getStorageIDs();
+          const infos = [];
+
+          for (const storageId of ids) {
+            infos.push(await requireMtp().getStorageInfo(storageId));
+          }
+
+          return serialize({ ids, infos });
+        },
+        async handles({ storageId, parent = 0xffffffff }) {
+          return serialize(
+            await requireMtp().getObjectHandles(storageId, 0, parent),
+          );
+        },
+        async count({ storageId, parent = 0xffffffff }) {
+          return serialize(
+            await requireMtp().getNumObjects(storageId, 0, parent),
+          );
+        },
+        async upload({
+          storageId,
+          parentObjectHandle = 0xffffffff,
+          filename,
+          dataBase64,
+          format,
+        }) {
+          return serialize(
+            await requireMtp().uploadFile({
+              storageId,
+              parentObjectHandle,
+              filename,
+              data: base64ToBytes(dataBase64),
+              format,
+            }),
+          );
+        },
+        async download(handle) {
+          const bytes = await requireMtp().getFile(handle);
+          return bytesToBase64(bytes);
+        },
+        async fileName(handle) {
+          return requireMtp().getFileName(handle);
+        },
+        async info(handle) {
+          return serialize(await requireMtp().getObjectInfo(handle));
+        },
+        async properties(handle) {
+          return serialize(
+            await requireMtp().getObjectPropertyList({ handle, depth: 0 }),
+          );
+        },
+        async remove(handle) {
+          await requireMtp().deleteObject(handle);
+        },
+        async close() {
+          if (mtp) {
+            await mtp.close();
+            mtp = null;
+          }
+          state.status = 'closed';
+          setStatus('Closed.');
+        },
+      };
+    </script>
+  </body>
+</html>
