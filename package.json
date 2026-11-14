@@ -1,7 +1,7 @@
 {
   "name": "mtp-web",
-  "version": "0.2.0",
-  "description": "Access devices over MTP",
+  "version": "0.3.0",
+  "description": "Read and write files on MTP devices over USB in the browser, Node.js and Electron",
   "main": "./src/mtp.js",
   "types": "./src/mtp.d.ts",
   "type": "module",
