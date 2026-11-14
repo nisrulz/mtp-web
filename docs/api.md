@@ -120,11 +120,14 @@ Returns `{ count, elements }`. Each element has `handle`, `property`,
 `propertyName`, `datatype` and `value`. The method returns 64-bit values as
 `BigInt`. It decodes strings from UTF-16LE.
 
-### `sendObjectPropertyList(storageId, parentObjectHandle, format, entries)`
+### `sendObjectPropertyList(storageId, parentObjectHandle, format, entries, size?)`
 
 Writes metadata for a new object. Use it before or instead of `uploadFile()`.
 An item in `entries` has the shape `{ handle?, property, datatype, value }`.
-Returns the response container.
+The `size` argument is the 64-bit object size in bytes and defaults to `0`.
+Pass a `BigInt` for a size above `Number.MAX_SAFE_INTEGER`. The method sends the
+high and low 32-bit size parameters and sets every entry handle to `0`, as the
+MTP specification requires. Returns the response container.
 
 ### `uploadFile(options)`
 
@@ -207,7 +210,7 @@ directly can use them.
 | `encodeMtpDate(date?)`                           | Format a `Date` as an MTP date string in UTC.                                                               |
 | `encodeObjectInfo(info)`                         | Encode an ObjectInfo dataset for `SendObjectInfo`.                                                          |
 | `decodeObjectInfo(bytes)`                        | Decode an ObjectInfo dataset.                                                                               |
-| `encodeObjectPropList(entries)`                  | Encode a property list for `SendObjectPropList`.                                                            |
+| `encodeObjectPropList(entries)`                  | Encode a property list for `SendObjectPropList`. Supports 128-bit values as `BigInt`.                       |
 | `decodeObjectPropList(bytes)`                    | Decode a property list from `GetObjectPropList`.                                                            |
 | `MtpResponseError`                               | Error class described above.                                                                                |
 | `OBJECT_FORMAT`                                  | `{ UNDEFINED: 0x3000, ASSOCIATION: 0x3001 }`.                                                               |

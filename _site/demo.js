@@ -501,6 +501,26 @@ function encodePropertyValue(datatype, value) {
     case MTP_DATATYPE.UINT64:
       view.setBigUint64(0, BigInt(value), true);
       return out.subarray(0, 8);
+    case MTP_DATATYPE.INT128:
+    case MTP_DATATYPE.UINT128: {
+      let number = BigInt(value);
+      const limit = 1n << 128n;
+
+      if (datatype === MTP_DATATYPE.INT128) {
+        if (number < -(1n << 127n) || number >= 1n << 127n) {
+          throw new RangeError('INT128 value is out of range.');
+        }
+        number = number < 0n ? number + limit : number;
+      } else if (number < 0n || number >= limit) {
+        throw new RangeError('UINT128 value is out of range.');
+      }
+
+      for (let index = 0; index < 16; index += 1) {
+        out[index] = Number(number & 0xffn);
+        number >>= 8n;
+      }
+      return out;
+    }
     case MTP_DATATYPE.STRING:
       return encodeMtpString(String(value ?? ''));
     default:
@@ -1637,16 +1657,37 @@ class Mtp extends EventTarget {
    * @param {number} parentObjectHandle
    * @param {number} format
    * @param {Array<{handle?: number, property: number, datatype: number, value: any}>} entries
+   * @param {number|bigint} [size] Object size in bytes.
    * @returns {Promise<object>} The response container.
    */
-  async sendObjectPropertyList(storageId, parentObjectHandle, format, entries) {
+  async sendObjectPropertyList(
+    storageId,
+    parentObjectHandle,
+    format,
+    entries,
+    size = 0,
+  ) {
+    const objectSize = BigInt(size);
+    if (objectSize < 0n || objectSize > 0xffffffffffffffffn) {
+      throw new RangeError('Object size must fit in an unsigned 64-bit value.');
+    }
+
+    const payload = [
+      storageId,
+      parentObjectHandle,
+      format,
+      Number((objectSize >> 32n) & 0xffffffffn),
+      Number(objectSize & 0xffffffffn),
+    ];
+    const properties = entries.map(entry => ({ ...entry, handle: 0 }));
+
     const { response } = await this._execute(
       {
         type: COMMAND_BLOCK,
         code: CODE.SEND_OBJECT_PROP_LIST.value,
-        payload: [storageId, parentObjectHandle, format, 0xffffffff],
+        payload,
       },
-      { sendData: encodeObjectPropList(entries) },
+      { sendData: encodeObjectPropList(properties) },
     );
 
     return response;
