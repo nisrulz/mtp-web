@@ -28,7 +28,7 @@ make install
 ```
 
 Node.js 18 or newer is necessary for the library. `usb` 3 installs prebuilt
-binaries. The developer tools need Node.js 20.19 or newer and Yarn 1.22 or
+binaries. The developer tools need Node.js 22.12 or newer and Yarn 1.22 or
 newer.
 
 Run `make help` to list every target.

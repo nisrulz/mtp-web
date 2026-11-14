@@ -15,7 +15,7 @@ browser and a phone in **File Transfer / MTP** mode.
 - **Browser:** a Chromium-based browser with WebUSB. Serve the page from HTTPS
   or `localhost`.
 - **Node.js:** version 18 or newer.
-- **Development:** Node.js 20.19 or newer and Yarn 1.22.
+- **Development:** Node.js 22.12 or newer and Yarn 1.22.
 - **Device:** unlock the device and set it to **File Transfer / MTP**. Do not
   use charging mode.
 
