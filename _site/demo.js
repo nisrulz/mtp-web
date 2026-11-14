@@ -179,7 +179,15 @@ const EVENT = {
   STORAGE_INFO_CHANGED: { value: 0x400c, name: 'StorageInfoChanged' },
   CAPTURE_COMPLETE: { value: 0x400d, name: 'CaptureComplete' },
   UNREPORTED_STATUS: { value: 0x400e, name: 'UnreportedStatus' },
-  OBJECT_PROP_CHANGED: { value: 0x400f, name: 'ObjectPropChanged' },
+  OBJECT_PROP_CHANGED: { value: 0xc801, name: 'ObjectPropChanged' },
+  OBJECT_PROP_DESC_CHANGED: {
+    value: 0xc802,
+    name: 'ObjectPropDescChanged',
+  },
+  OBJECT_REFERENCES_CHANGED: {
+    value: 0xc803,
+    name: 'ObjectReferencesChanged',
+  },
 };
 
 /** Event codes used by MTP event containers. */

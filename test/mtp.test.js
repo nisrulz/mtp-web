@@ -761,6 +761,12 @@ test('device property codes match the MTP 1.1 property table', () => {
   assert.equal(DEVICE_PROPERTY.PLAYBACK_POSITION, 0xd413);
 });
 
+test('object property event codes match the MTP 1.1 event table', () => {
+  assert.equal(EVENT_CODE.OBJECT_PROP_CHANGED, 0xc801);
+  assert.equal(EVENT_CODE.OBJECT_PROP_DESC_CHANGED, 0xc802);
+  assert.equal(EVENT_CODE.OBJECT_REFERENCES_CHANGED, 0xc803);
+});
+
 test('getStorageInfo decodes capacities and strings', async () => {
   const stream = concatBytes([
     response(OK, 0),
