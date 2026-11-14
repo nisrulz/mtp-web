@@ -2727,7 +2727,7 @@ class Mtp extends EventTarget {
       return;
     }
 
-    await this._executeDirect(this._command(CODE.CLOSE_SESSION, [1]), {
+    await this._executeDirect(this._command(CODE.CLOSE_SESSION), {
       acceptCodes: [CODE.SESSION_NOT_OPEN.value],
     });
     this.sessionOpen = false;

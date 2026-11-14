@@ -85,7 +85,8 @@ Returns the response container.
 ### `closeSession()`
 
 Closes the MTP session. The USB device stays open. The method does nothing when
-the device is not open. It accepts `SessionNotOpen`.
+the device is not open. The command sends no parameters. It accepts
+`SessionNotOpen`.
 
 ### `getDeviceInfo()`
 

@@ -1889,14 +1889,16 @@ test('openSession sends session ID 1 and starts at transaction 0', async () => {
   assert.equal(mtp.transactionID, 1);
 });
 
-test('closeSession accepts SessionNotOpen', async () => {
+test('closeSession sends no parameters and accepts SessionNotOpen', async () => {
   const stream = concatBytes([response(OK, 0), response(0x2003, 1)]);
-  const mtp = new Mtp(0x1234, 0x5678, new FakeDevice(stream));
+  const device = new FakeDevice(stream);
+  const mtp = new Mtp(0x1234, 0x5678, device);
   await mtp.ready;
   await mtp.openSession();
 
   await mtp.closeSession();
   assert.equal(mtp.sessionOpen, false);
+  assert.deepEqual(commandParameters(device, 1), []);
 });
 
 test('read rejects a header with a length below 12', async () => {
