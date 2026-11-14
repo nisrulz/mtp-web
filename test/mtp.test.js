@@ -2814,6 +2814,34 @@ test('decodeDeviceInfo rejects a dataset below the fixed fields', () => {
   assert.throws(() => decodeDeviceInfo(new Uint8Array(4)), RangeError);
 });
 
+function deviceInfoCountOffsets() {
+  const fixture = deviceInfoFixture();
+  const view = new DataView(
+    fixture.buffer,
+    fixture.byteOffset,
+    fixture.byteLength,
+  );
+  const description = encodeStringFixture('microsoft.com: 1.0').byteLength;
+  const offsets = [];
+  let offset = 2 + 4 + 2 + description + 2;
+
+  for (let index = 0; index < 5; index += 1) {
+    offsets.push(offset);
+    offset += 4 + view.getUint32(offset, true) * 2;
+  }
+
+  return offsets;
+}
+
+test('decodeDeviceInfo rejects an array count larger than the payload', () => {
+  for (const offset of deviceInfoCountOffsets()) {
+    const hostile = deviceInfoFixture().slice();
+    new DataView(hostile.buffer).setUint32(offset, 0xffffffff, true);
+
+    assert.throws(() => decodeDeviceInfo(hostile), RangeError);
+  }
+});
+
 test('getDeviceInfo works before openSession', async () => {
   const stream = concatBytes([
     dataPacket(0x1001, 0, deviceInfoFixture()),

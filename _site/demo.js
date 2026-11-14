@@ -586,10 +586,13 @@ function readCountedArray(bytes, view, offset, width) {
   offset += 4;
 
   const available = Math.floor((bytes.byteLength - offset) / width);
-  const length = Math.min(count, available);
+  if (count > available) {
+    throw new RangeError('The DeviceInfo dataset is too short.');
+  }
+
   const values = [];
 
-  for (let index = 0; index < length; index += 1) {
+  for (let index = 0; index < count; index += 1) {
     values.push(
       width === 4
         ? view.getUint32(offset + index * 4, true)
@@ -597,7 +600,7 @@ function readCountedArray(bytes, view, offset, width) {
     );
   }
 
-  return { values, offset: offset + length * width };
+  return { values, offset: offset + count * width };
 }
 
 /**
