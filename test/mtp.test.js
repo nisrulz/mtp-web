@@ -10,6 +10,7 @@ import Mtp, {
   decodeObjectPropDesc,
   decodeObjectPropList,
   decodePropertyValueData,
+  DEVICE_PROPERTY,
   encodeMtpDate,
   encodeMtpString,
   encodeObjectInfo,
@@ -744,6 +745,20 @@ test('storage access capability values match the MTP spec', () => {
     READ_ONLY: 0x01,
     READ_ONLY_WITH_DELETE: 0x02,
   });
+});
+
+test('device property codes match the MTP 1.1 property table', () => {
+  assert.equal(DEVICE_PROPERTY.SYNCHRONIZATION_PARTNER, 0xd401);
+  assert.equal(DEVICE_PROPERTY.DEVICE_FRIENDLY_NAME, 0xd402);
+  assert.equal(DEVICE_PROPERTY.VOLUME, 0xd403);
+  assert.equal(DEVICE_PROPERTY.SUPPORTED_FORMATS_ORDERED, 0xd404);
+  assert.equal(DEVICE_PROPERTY.DEVICE_ICON, 0xd405);
+  assert.equal(DEVICE_PROPERTY.SESSION_INITIATOR_VERSION_INFO, 0xd406);
+  assert.equal(DEVICE_PROPERTY.PERCEIVED_DEVICE_TYPE, 0xd407);
+  assert.equal(DEVICE_PROPERTY.PLAYBACK_RATE, 0xd410);
+  assert.equal(DEVICE_PROPERTY.PLAYBACK_OBJECT, 0xd411);
+  assert.equal(DEVICE_PROPERTY.PLAYBACK_CONTAINER_INDEX, 0xd412);
+  assert.equal(DEVICE_PROPERTY.PLAYBACK_POSITION, 0xd413);
 });
 
 test('getStorageInfo decodes capacities and strings', async () => {
